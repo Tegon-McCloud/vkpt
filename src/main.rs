@@ -19,7 +19,6 @@ pub mod resource;
 pub mod uploader;
 pub mod descriptor;
 pub mod mesh;
-pub mod acceleration;
 pub mod shader_binding_table;
 pub mod surface;
 

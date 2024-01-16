@@ -170,7 +170,7 @@ impl<'a> UploadBuffer<'a> {
    
     pub unsafe fn flush(&self) -> VkResult<()> {
 
-        if self.buffer.allocation.memory_properties().contains(vk::MemoryPropertyFlags::HOST_COHERENT) {
+        if !self.buffer.allocation.memory_properties().contains(vk::MemoryPropertyFlags::HOST_COHERENT) {
             let non_coherent_atom_size = self.buffer.context.physical_device().properties.limits.non_coherent_atom_size;
 
             let range = vk::MappedMemoryRange::builder()
@@ -178,7 +178,7 @@ impl<'a> UploadBuffer<'a> {
                 .offset(self.buffer.allocation.offset())
                 .size(util::align_up(self.buffer.allocation.size(), non_coherent_atom_size))
                 .build();
-        
+            
             self.buffer.context.flush_mapped_memory_ranges(&[range])?;
         }
 
@@ -251,7 +251,8 @@ impl<'a> ReadBackBuffer<'a> {
     }
    
     pub unsafe fn invalidate(&self) -> VkResult<()> {
-        if self.buffer.allocation.memory_properties().contains(vk::MemoryPropertyFlags::HOST_COHERENT) {
+
+        if !self.buffer.allocation.memory_properties().contains(vk::MemoryPropertyFlags::HOST_COHERENT) {
             let non_coherent_atom_size = self.buffer.context.physical_device().properties.limits.non_coherent_atom_size;
 
             let range = vk::MappedMemoryRange::builder()
@@ -259,7 +260,7 @@ impl<'a> ReadBackBuffer<'a> {
                 .offset(self.buffer.allocation.offset())
                 .size(util::align_up(self.buffer.allocation.size(), non_coherent_atom_size))
                 .build();
-        
+            
             self.buffer.context.invalidate_mapped_memory_ranges(&[range])?;
         }
 

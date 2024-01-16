@@ -3,18 +3,18 @@ use ash::{vk::{self, AccelerationStructureGeometryTrianglesDataKHR}, prelude::Vk
 
 use crate::{context::DeviceContext, resource::{DeviceBuffer, UploadBuffer}};
 
-// pub struct MeshFactory<'a> {
+// pub struct AsyncMeshFactory<'a> {
 //     context: &'a DeviceContext,
 
 
 
-//     staging_buffer: Buffer<'a>,
-//     scratch_buffer: Buffer<'a>,
+//     staging_buffer: UploadBuffer<'a>,
+//     scratch_buffer: DeviceBuffer<'a>,
 // }
 
 // impl<'a> MeshFactory<'a> {
 
-// }
+//}
 
 pub struct Mesh<'a> {
     context: &'a DeviceContext,

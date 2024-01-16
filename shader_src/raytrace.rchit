@@ -4,8 +4,9 @@
 
 
 layout(location = 0) rayPayloadInEXT vec3 color;
-hitAttributeEXT vec3 attribs;
+hitAttributeEXT vec2 attribs;
 
 void main() {
-    color = vec3(1.0, 0.0, 0.0);
+    vec3 bc = vec3(1.0 - attribs.x - attribs.y, attribs.x, attribs.y);
+    color = bc;
 }
