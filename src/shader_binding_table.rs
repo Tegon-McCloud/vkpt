@@ -75,6 +75,10 @@ impl<'a> ShaderBindingTableBuilder<'a> {
         self.push_entry(2, shader_group, data);
     }
 
+    pub fn push_callable_entry(&mut self, shader_group: u32, data: &[u8]) {
+        self.push_entry(3, shader_group, data);
+    }
+
     pub fn build(&self, pipeline: vk::Pipeline, group_count: u32) -> VkResult<ShaderBindingTable> {
     
         let align_info = AlignmentInfo::for_context(self.context);
@@ -112,7 +116,7 @@ impl<'a> ShaderBindingTableBuilder<'a> {
         let get_handle = |shader_group: u32| -> &[u8] {
             let handle_begin = shader_group as usize * align_info.handle_size as usize;
             let handle_end = handle_begin + align_info.handle_size as usize;
-
+            
             &handle_data[handle_begin..handle_end]
         };
         
@@ -157,6 +161,11 @@ impl<'a> ShaderBindingTableBuilder<'a> {
                 size: strides[2],
             },
             
+            callable_region: StridedDeviceAddressRegionKHR {
+                device_address: buffer_address + offsets[3],
+                stride: strides[3],
+                size: strides[3],
+            },
         })
     }
 
@@ -177,6 +186,7 @@ pub struct ShaderBindingTable<'a> {
     raygen_region: vk::StridedDeviceAddressRegionKHR,
     miss_region: vk::StridedDeviceAddressRegionKHR,
     hit_group_region: vk::StridedDeviceAddressRegionKHR,
+    callable_region: vk::StridedDeviceAddressRegionKHR,
 }
 
 impl<'a> ShaderBindingTable<'a> {
@@ -191,5 +201,9 @@ impl<'a> ShaderBindingTable<'a> {
 
     pub unsafe fn hit_group_region(&self) -> vk::StridedDeviceAddressRegionKHR {
         self.hit_group_region
+    }
+
+    pub unsafe fn callable_region(&self) -> vk::StridedDeviceAddressRegionKHR {
+        self.callable_region
     }
 }

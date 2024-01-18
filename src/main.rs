@@ -4,30 +4,68 @@
 
 use std::{path::Path, fs::File, ffi::CStr, os::windows::fs::MetadataExt, io::Read};
 
-use ash::{vk::{self, Packed24_8}, prelude::VkResult};
+use ash::{vk::{self, Packed24_8, DeviceAddress}, prelude::VkResult};
 use itertools::Itertools;
 
 use context::DeviceContext;
+use nalgebra::{Matrix4, Vector3};
 use resource::{Image, ReadBackBuffer};
 use mesh::Mesh;
+use scene::{Scene, SceneDescription};
 use shader_binding_table::ShaderBindingTableBuilder;
 
 use crate::resource::{UploadBuffer, DeviceBuffer};
 pub mod util;
 pub mod context;
 pub mod resource;
-pub mod uploader;
-pub mod descriptor;
 pub mod mesh;
+pub mod scene;
 pub mod shader_binding_table;
-pub mod surface;
 
 
-pub fn load_scene<P: AsRef<Path>>(path: P, context: &DeviceContext) -> VkResult<()> {
+// struct Model {
+//     mesh: u64,
+//     transform: [f32; 12],
+// }
+
+// struct Scene<'a> {
+//     context: &'a DeviceContext,
+//     meshes: Vec<Mesh<'a>>,  
+//     models: Vec<Model>,
+
+//     tlas: vk::AccelerationStructureKHR,
+//     tlas_buffer: DeviceBuffer<'a>
+// }
+
+fn add_node(
+    scene_description: &mut SceneDescription,
+    mesh_ids: &[usize],
+    node: gltf::Node<'_>,
+    mut transform: Matrix4<f32>
+) {
+    let local_transform = node.transform().matrix(); 
+    let local_transform = Matrix4::from_fn(|i, j| local_transform[j][i]);
+
+    transform = local_transform * transform;
+    
+    if let Some(gltf_mesh) = node.mesh() {
+
+        let mesh_id = mesh_ids[gltf_mesh.index()];
+        scene_description.add_instance(mesh_id, transform, 0)
+    }
+
+    for child in node.children() {
+        add_node(scene_description, mesh_ids, child, transform);
+    }
+}
+
+fn load<P: AsRef<Path>>(path: P, context: &DeviceContext) -> VkResult<Scene> {
 
     let (document, buffers, _images) = gltf::import(path).expect("failed to import scene");
 
-    let mut meshes = Vec::new();
+    let mut scene_description = SceneDescription::new();
+
+    let mut mesh_ids = Vec::new();
 
     for mesh in document.meshes() {
         for primitive in mesh.primitives() {
@@ -37,131 +75,24 @@ pub fn load_scene<P: AsRef<Path>>(path: P, context: &DeviceContext) -> VkResult<
                 .unwrap()
                 .into_u32()
                 .array_chunks();
-
+            
             let position_iter = reader.read_positions().unwrap();
-            // let normal_iter = reader.read_normals().unwrap();
+            let normal_iter = reader.read_normals().unwrap();
             unsafe {
-                meshes.push(Mesh::new(position_iter, face_iter, context)?);
+                let mesh_id = scene_description.add_mesh(Mesh::new(context, face_iter, position_iter, normal_iter)?);
+                mesh_ids.push(mesh_id);
             }
         }
     }
 
-    if let Some(_scene) = document.default_scene() {
-
+    if let Some(scene) = document.default_scene() {
+        for node in scene.nodes() {
+            add_node(&mut scene_description, &mesh_ids, node, Matrix4::identity());
+        }
     }
 
-    Ok(())
-
-}
-
-pub fn build_top_level_accel_structure<'a>(context: &'a DeviceContext, mesh: &Mesh<'a>) -> VkResult<(vk::AccelerationStructureKHR, DeviceBuffer<'a>)> {
-
-    unsafe {
-
-        let identity_matrix = [
-            1.0, 0.0, 0.0, 0.0,
-            0.0, 1.0, 0.0, 0.0,
-            0.0, 0.0, 1.0, 0.0,
-        ];
-
-        let instance = vk::AccelerationStructureInstanceKHR {
-            transform: vk::TransformMatrixKHR { matrix: identity_matrix },
-            instance_custom_index_and_mask: Packed24_8::new(0, 0xff),
-            instance_shader_binding_table_record_offset_and_flags: Packed24_8::new(0, vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8),
-            acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
-                device_handle: mesh.get_accel_structure_device_address()
-            },
-        };  
-
-        let mut instance_buffer = UploadBuffer::new(
-            &context,
-            std::mem::size_of::<vk::AccelerationStructureInstanceKHR>() as vk::DeviceSize,
-            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
-        )?;
-
-        instance_buffer.write(instance, 0);
-        instance_buffer.flush()?;
-
-        let accel_geometry_data = vk::AccelerationStructureGeometryDataKHR {
-            instances: vk::AccelerationStructureGeometryInstancesDataKHR::builder()
-                .array_of_pointers(false)
-                .data(instance_buffer.get_device_or_host_address_const())
-                .build(),
-        };
-
-        let accel_geometry = vk::AccelerationStructureGeometryKHR::builder()
-            .geometry_type(vk::GeometryTypeKHR::INSTANCES)
-            .geometry(accel_geometry_data);
-
-        let mut accel_build_info = vk::AccelerationStructureBuildGeometryInfoKHR::builder()
-            .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
-            .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
-            .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
-            .geometries(std::slice::from_ref(&accel_geometry))
-            .build();
-
-        let accel_sizes = context.extensions().acceleration_structure.get_acceleration_structure_build_sizes(
-            vk::AccelerationStructureBuildTypeKHR::DEVICE,
-            &accel_build_info,
-            &[1],
-        );
-
-        println!("Tlas buffer size: {}", accel_sizes.acceleration_structure_size);
-
-        let accel_buffer = DeviceBuffer::new(
-            context,
-            accel_sizes.acceleration_structure_size,
-            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR,
-        )?;
-
-        let accel_info = vk::AccelerationStructureCreateInfoKHR::builder()
-            .buffer(accel_buffer.handle())
-            .size(accel_sizes.acceleration_structure_size)
-            .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL);
-
-        let accel_structure = context.extensions().acceleration_structure.create_acceleration_structure(&accel_info, None).unwrap();
-
-        let scratch_buffer = DeviceBuffer::new(
-            context,
-            accel_sizes.build_scratch_size, 
-            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER,
-        )?;
-
-        accel_build_info.scratch_data = scratch_buffer.get_device_or_host_address();
-        accel_build_info.dst_acceleration_structure = accel_structure;
-
-        let accel_build_range = vk::AccelerationStructureBuildRangeInfoKHR::builder()
-            .primitive_count(1)
-            .build();
-
-        let accel_build_ranges = [std::slice::from_ref(&accel_build_range)];
-
-        context.execute_commands(|cmd_buffer| {
-            context.extensions().acceleration_structure.cmd_build_acceleration_structures(
-                cmd_buffer,
-                std::slice::from_ref(&accel_build_info),
-                &accel_build_ranges,
-            );
-
-            let barrier = vk::BufferMemoryBarrier2::builder()
-                .src_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
-                .src_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR)
-                .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
-                .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR)
-                .buffer(accel_buffer.handle())
-                .offset(0)
-                .size(vk::WHOLE_SIZE)
-                .build();
-
-            let dependency_info = vk::DependencyInfo::builder()
-                .buffer_memory_barriers(std::slice::from_ref(&barrier));
-
-            context.device().cmd_pipeline_barrier2(cmd_buffer, &dependency_info);
-        })?;
-
-        Ok((accel_structure, accel_buffer))
-    }
-}
+    scene_description.build(context)
+}    
 
 pub fn create_descriptor_set<'a>(
     context: &'a DeviceContext,
@@ -351,29 +282,26 @@ impl<'a> SampleTarget<'a> {
     }
 
     pub unsafe fn full_view_info(&self) -> vk::ImageViewCreateInfo {
-
         vk::ImageViewCreateInfo::builder()
-        .image(self.image.inner)
-        .view_type(vk::ImageViewType::TYPE_2D)
-        .format(vk::Format::R32G32B32A32_SFLOAT)
-        .components(vk::ComponentMapping::builder()
-            .r(vk::ComponentSwizzle::R)
-            .g(vk::ComponentSwizzle::G)
-            .b(vk::ComponentSwizzle::B)
-            .a(vk::ComponentSwizzle::A)
+            .image(self.image.inner)
+            .view_type(vk::ImageViewType::TYPE_2D)
+            .format(vk::Format::R32G32B32A32_SFLOAT)
+            .components(vk::ComponentMapping::builder()
+                .r(vk::ComponentSwizzle::R)
+                .g(vk::ComponentSwizzle::G)
+                .b(vk::ComponentSwizzle::B)
+                .a(vk::ComponentSwizzle::A)
+                .build()
+            )
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
             .build()
-        )
-        .subresource_range(vk::ImageSubresourceRange {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
-            base_mip_level: 0,
-            level_count: 1,
-            base_array_layer: 0,
-            layer_count: 1,
-        })
-        .build()
     }
-
-
 }
 
 
@@ -383,32 +311,39 @@ impl<'a> SampleTarget<'a> {
 
 // }
 
+#[repr(C)]
+struct HitGroupSbtData {
+    material_index: u32,
+    face_address: DeviceAddress,
+    position_address: DeviceAddress,
+    normal_address: DeviceAddress,
+}
 
 fn main() {
 
     let context = DeviceContext::new().expect("failed to create device context");
 
-    // load_scene("./resources/bunny.gltf", &context).unwrap();
+    let scene = load("./resources/bunny.gltf", &context).unwrap();
 
-    let mesh = unsafe {
-        let positions = [
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-        ];
+    // let mesh = unsafe {
+    //     let positions = [
+    //         [0.0, 0.0, 0.0],
+    //         [1.0, 0.0, 0.0],
+    //         [0.0, 1.0, 0.0],
+    //         [1.0, 1.0, 0.0],
+    //     ];
 
-        let indices = [
-            [0, 1, 2]
-        ];
+    //     let indices = [
+    //         [0, 1, 2],
+    //         [3, 2, 1],
+    //     ];
 
-        Mesh::new(positions.iter().copied(), indices.iter().copied(), &context).unwrap()
-    };
+    //     Mesh::new(positions.iter().copied(), indices.iter().copied(), &context).unwrap()
+    // };
 
     let entry_point_name = unsafe {
         CStr::from_bytes_with_nul_unchecked(b"main\0")
     };
-
-    let (accel_structure, _accel_buffer) = build_top_level_accel_structure(&context, &mesh).unwrap();
 
     let img_width = 512;
     let img_height = 512;
@@ -416,11 +351,12 @@ fn main() {
     let sample_target = SampleTarget::new(&context, img_width, img_height).unwrap();
     let sample_view = unsafe { context.device().create_image_view(&sample_target.full_view_info(), None).unwrap() };
     
-    let (descriptor_set, descriptor_set_layout, descriptor_pool) = create_descriptor_set(&context, accel_structure, sample_view).unwrap();
+    let (descriptor_set, descriptor_set_layout, descriptor_pool) = create_descriptor_set(&context, scene.tlas(), sample_view).unwrap();
 
     let raygen_module = unsafe { create_shader_module("shader_bin/raytrace.rgen.spv", &context).unwrap() };
     let miss_module = unsafe { create_shader_module("shader_bin/raytrace.rmiss.spv", &context).unwrap() };
     let closest_hit_module = unsafe { create_shader_module("shader_bin/raytrace.rchit.spv", &context).unwrap() };
+    let callable_module = unsafe { create_shader_module("shader_bin/test.rcall.spv", &context).unwrap() };
 
     let raygen_shader_stage_info = vk::PipelineShaderStageCreateInfo::builder()
         .stage(vk::ShaderStageFlags::RAYGEN_KHR)
@@ -440,7 +376,13 @@ fn main() {
         .name(entry_point_name)
         .build();
     
-    let stage_infos = [raygen_shader_stage_info, miss_shader_stage_info, closest_hit_stage_info];
+    let callable_stage_info = vk::PipelineShaderStageCreateInfo::builder()
+        .stage(vk::ShaderStageFlags::CALLABLE_KHR)
+        .module(callable_module)
+        .name(entry_point_name)
+        .build();
+
+    let stage_infos = [raygen_shader_stage_info, miss_shader_stage_info, closest_hit_stage_info, callable_stage_info];
 
     let raygen_group_info = general_shader_group_info(0);
     let miss_group_info = general_shader_group_info(1);
@@ -451,8 +393,10 @@ fn main() {
         .general_shader(vk::SHADER_UNUSED_KHR)
         .ty(vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP)
         .build();
+    let callable_info = general_shader_group_info(3);
 
-    let group_infos = [raygen_group_info, miss_group_info, hit_group_info];
+    
+    let group_infos = [raygen_group_info, miss_group_info, hit_group_info, callable_info];
 
     let pipeline_layout_info = vk::PipelineLayoutCreateInfo::builder()
         .set_layouts(std::slice::from_ref(&descriptor_set_layout));
@@ -462,7 +406,7 @@ fn main() {
     let pipeline_info = vk::RayTracingPipelineCreateInfoKHR::builder()
         .stages(&stage_infos)
         .groups(&group_infos)
-        .max_pipeline_ray_recursion_depth(2)
+        .max_pipeline_ray_recursion_depth(3)
         .layout(pipeline_layout)
         .build();
 
@@ -475,14 +419,23 @@ fn main() {
         ).unwrap()[0]
     };
 
+    let hit_group_data = unsafe {
+        HitGroupSbtData {
+            material_index: 0,
+            face_address: scene.get_mesh(0).index_address(),
+            position_address: scene.get_mesh(0).position_address(),
+            normal_address: scene.get_mesh(0).normal_address(),
+        }
+    };
 
     let mut sbt_builder = ShaderBindingTableBuilder::new(&context);
 
     sbt_builder.push_raygen_entry(0, &[]);
     sbt_builder.push_miss_entry(1, &[]);
-    sbt_builder.push_hit_group_entry(2, &[]);
-
-    let sbt = sbt_builder.build(pipeline, 3).unwrap();
+    sbt_builder.push_hit_group_entry(2, unsafe { util::as_u8_slice(&hit_group_data) });
+    sbt_builder.push_callable_entry(3, &[]);
+    
+    let sbt = sbt_builder.build(pipeline, 4).unwrap();
 
     let readback_buffer = ReadBackBuffer::new(
         &context,
@@ -527,7 +480,7 @@ fn main() {
                     &sbt.raygen_region(),
                     &sbt.miss_region(),
                     &sbt.hit_group_region(),
-                    &vk::StridedDeviceAddressRegionKHR::default(),
+                    &sbt.callable_region(),
                     img_width,
                     img_height,
                     1,
@@ -600,14 +553,15 @@ fn main() {
             }
 
         }).unwrap();
-        
 
         let mut img_raw_f32 = vec![0.0f32; (4 * img_width * img_height) as usize];
 
         readback_buffer.invalidate().unwrap();
         readback_buffer.read_slice(&mut img_raw_f32, 0);
 
-        println!("{:?}", &img_raw_f32[0..4]);
+        let px_idx = (img_height / 2 * img_width + img_width / 2) as usize;
+
+        println!("{:?}", &img_raw_f32[4*px_idx..4*px_idx+4]);
 
         let img_raw_u8 = img_raw_f32.iter()
             .map(|f| (f * 255.0).clamp(0.0, 255.0) as u8)
@@ -625,13 +579,12 @@ fn main() {
         context.device().destroy_shader_module(raygen_module, None);
         context.device().destroy_shader_module(miss_module, None);
         context.device().destroy_shader_module(closest_hit_module, None);
+        context.device().destroy_shader_module(callable_module, None);
 
         //context.device().free_descriptor_sets(descriptor_pool, &[descriptor_set]).unwrap();
         context.device().destroy_descriptor_set_layout(descriptor_set_layout, None);
         context.device().destroy_descriptor_pool(descriptor_pool, None);
 
         context.device().destroy_image_view(sample_view, None);
-
-        context.extensions().acceleration_structure.destroy_acceleration_structure(accel_structure, None);
     };
 }

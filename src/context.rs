@@ -227,6 +227,9 @@ impl DeviceContext {
             khr::RayTracingPipeline::name().as_ptr(),
         ];
 
+        let features = vk::PhysicalDeviceFeatures::builder()
+            .shader_int64(true);
+
         let mut features12 = vk::PhysicalDeviceVulkan12Features::builder()
             .buffer_device_address(true)
             .timeline_semaphore(true)
@@ -259,6 +262,7 @@ impl DeviceContext {
         let info = vk::DeviceCreateInfo::builder()
             .queue_create_infos(std::slice::from_ref(&queue_create_info))
             .enabled_extension_names(&extension_names)
+            .enabled_features(&features)
             .push_next(&mut features12)
             .push_next(&mut features13)
             .push_next(&mut accel_features)

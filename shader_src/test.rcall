@@ -1,0 +1,8 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+
+layout(location = 0) callableDataInEXT vec3 callData;
+
+void main() {
+    callData = vec3(0.5, 0.0, 0.0);
+}

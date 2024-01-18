@@ -1,7 +1,7 @@
 
 use ash::{vk::{self, AccelerationStructureGeometryTrianglesDataKHR}, prelude::VkResult};
 
-use crate::{context::DeviceContext, resource::{DeviceBuffer, UploadBuffer}};
+use crate::{context::DeviceContext, resource::{DeviceBuffer, UploadBuffer}, util};
 
 // pub struct AsyncMeshFactory<'a> {
 //     context: &'a DeviceContext,
@@ -16,12 +16,21 @@ use crate::{context::DeviceContext, resource::{DeviceBuffer, UploadBuffer}};
 
 //}
 
+struct MeshGeometry<'a> {
+    #[allow(unused)]
+    buffer: DeviceBuffer<'a>,
+    index_region: vk::DeviceAddress,
+    position_region: vk::DeviceAddress,
+    normal_region: vk::DeviceAddress,
+    
+    face_count: u64,
+    vertex_count: u64,
+}
+
 pub struct Mesh<'a> {
     context: &'a DeviceContext,
-    #[allow(unused)]
-    vertex_buffer: DeviceBuffer<'a>,
-    #[allow(unused)]
-    index_buffer: DeviceBuffer<'a>,
+    geometry: MeshGeometry<'a>,
+
     #[allow(unused)]
     accel_buffer: DeviceBuffer<'a>,
     accel_structure: vk::AccelerationStructureKHR,
@@ -29,159 +38,137 @@ pub struct Mesh<'a> {
 
 impl<'a> Mesh<'a> {
 
-    pub unsafe fn new<PI, FI>(
-        position_iter: PI,
+    pub unsafe fn new<FI, PI, NI>(
+        context: &'a DeviceContext,
         face_iter: FI,
-        context: &'a DeviceContext
+        position_iter: PI,
+        normal_iter: NI,
     ) -> VkResult<Self> where
+        FI: ExactSizeIterator<Item=[u32; 3]>,
         PI: ExactSizeIterator<Item=[f32; 3]>,
-        FI: ExactSizeIterator<Item=[u32; 3]>
+        NI: ExactSizeIterator<Item=[f32; 3]>,
     {
-
-        let face_count = face_iter.len();
-        let vertex_count = position_iter.len();
-        
-        let (index_buffer, vertex_buffer) = Self::create_and_fill_geometry_buffers(
-            position_iter,
+        let geometry = Self::create_geometry(
+            context,
             face_iter,
-            context
+            position_iter,
+            normal_iter,
         )?;
 
         let (accel_buffer, accel_structure) = Self::create_and_build_acceleration_structure(
-            &index_buffer,
-            &vertex_buffer, 
-            face_count,
-            vertex_count,
             context,
+            &geometry,
         )?;
-
 
         Ok(Self {
             context,
-            vertex_buffer,
-            index_buffer,
+            geometry,
             accel_buffer,
             accel_structure,
         })
     }
 
-    unsafe fn create_and_fill_geometry_buffers<PI, FI>(
-        position_iter: PI,
-        face_iter: FI,
+    unsafe fn create_geometry<FI, PI, NI>(
         context: &'a DeviceContext,
-    ) -> VkResult<(DeviceBuffer, DeviceBuffer)> where
+        face_iter: FI,
+        position_iter: PI,
+        normal_iter: NI,
+    ) -> VkResult<MeshGeometry<'a>> where
+        FI: ExactSizeIterator<Item=[u32; 3]>,
         PI: ExactSizeIterator<Item=[f32; 3]>,
-        FI: ExactSizeIterator<Item=[u32; 3]> 
+        NI: ExactSizeIterator<Item=[f32; 3]>,
     {
-        let index_buffer_size = face_iter.len() * std::mem::size_of::<[u32; 3]>();
-        let vertex_buffer_size = position_iter.len() * std::mem::size_of::<[f32; 3]>();
+        let face_count = face_iter.len() as u64;
+        let vertex_count = position_iter.len() as u64;
 
-        let index_buffer = DeviceBuffer::new(
-            context,
-            index_buffer_size as u64,
-            vk::BufferUsageFlags::TRANSFER_DST |
-            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS |
-            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
-        )?;
-        let vertex_buffer = DeviceBuffer::new(
-            context,
-            vertex_buffer_size as u64,
-            vk::BufferUsageFlags::TRANSFER_DST |
-            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS |
-            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
-        )?;
+        let position_iter = position_iter.map(|p| [p[0], p[1], p[2], 1.0]);
+        let normal_iter = normal_iter.map(|n| [n[0], n[1], n[2], 0.0]);
+
+        let region_sizes = [
+            (face_iter.len() * std::mem::size_of::<[u32; 3]>()) as u64,
+            (position_iter.len() * std::mem::size_of::<[f32; 4]>()) as u64,
+            (normal_iter.len() * std::mem::size_of::<[f32; 4]>()) as u64,
+        ];
+
+        let (region_offsets, buffer_size) = util::region_offsets(region_sizes, 16);
         
+        let buffer = DeviceBuffer::new(
+            context,
+            buffer_size,
+            vk::BufferUsageFlags::TRANSFER_DST |
+            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS |
+            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+        )?;
+
         let mut staging_buffer = UploadBuffer::new(
             context,
-            (index_buffer_size + vertex_buffer_size) as u64,
+            buffer_size,
             vk::BufferUsageFlags::TRANSFER_SRC
         )?;
 
-        let face_offset = 0;
-        let position_offset = index_buffer_size;
-
-        staging_buffer.write_from_iter(face_iter, face_offset);
-        staging_buffer.write_from_iter(position_iter, position_offset);
-
+        staging_buffer.write_from_iter(face_iter, region_offsets[0] as usize);
+        staging_buffer.write_from_iter(position_iter, region_offsets[1] as usize);
+        staging_buffer.write_from_iter(normal_iter, region_offsets[2] as usize);
+        
         staging_buffer.flush()?;
 
         context.execute_commands(|cmd_buffer| {
-
-            let index_region = vk::BufferCopy2::builder()
+            let copy_region = vk::BufferCopy2::builder()
                 .src_offset(0)
                 .dst_offset(0)
-                .size(index_buffer_size as u64)
+                .size(buffer_size)
                 .build();
 
-            let index_copy_info = vk::CopyBufferInfo2::builder()
+            let copy_info = vk::CopyBufferInfo2::builder()
                 .src_buffer(staging_buffer.handle())
-                .dst_buffer(index_buffer.handle())
-                .regions(std::slice::from_ref(&index_region));
+                .dst_buffer(buffer.handle())
+                .regions(std::slice::from_ref(&copy_region));
 
-            context.device().cmd_copy_buffer2(cmd_buffer, &index_copy_info);
-            
-            let vertex_region = vk::BufferCopy2::builder()
-                .src_offset(index_buffer_size as u64)
-                .dst_offset(0)
-                .size(vertex_buffer_size as u64)
-                .build();
-
-            let vertex_copy_info = vk::CopyBufferInfo2::builder()
-                .src_buffer(staging_buffer.handle())
-                .dst_buffer(vertex_buffer.handle())
-                .regions(std::slice::from_ref(&vertex_region));
-            
-            context.device().cmd_copy_buffer2(cmd_buffer, &vertex_copy_info);
+            context.device().cmd_copy_buffer2(cmd_buffer, &copy_info);
 
             // prevent acceleration structure build until upload has finished
-            let index_barrier = vk::BufferMemoryBarrier2::builder()
+            let barrier = vk::BufferMemoryBarrier2::builder()
                 .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
                 .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
                 .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
                 .dst_access_mask(vk::AccessFlags2::SHADER_READ)
-                .buffer(index_buffer.handle())
+                .buffer(buffer.handle())
                 .offset(0)
-                .size(vk::WHOLE_SIZE)
+                .size(buffer_size)
                 .build();
-
-            let vertex_barrier = vk::BufferMemoryBarrier2::builder()
-                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-                .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
-                .dst_access_mask(vk::AccessFlags2::SHADER_READ)
-                .buffer(index_buffer.handle())
-                .offset(0)
-                .size(vk::WHOLE_SIZE)
-                .build();
-
-            let buffer_barriers = [index_barrier, vertex_barrier];
 
             let dependency_info = vk::DependencyInfo::builder()
-                .buffer_memory_barriers(&buffer_barriers);
+                .buffer_memory_barriers(std::slice::from_ref(&barrier));
 
             context.device().cmd_pipeline_barrier2(cmd_buffer, &dependency_info);
         })?;
 
-        Ok((index_buffer, vertex_buffer))
+        let device_address = buffer.get_device_address();
+
+        Ok(MeshGeometry {
+            buffer,
+            index_region: device_address + region_offsets[0],
+            position_region: device_address + region_offsets[1],
+            normal_region: device_address + region_offsets[2],
+            face_count,
+            vertex_count,
+        })
     }
 
 
     unsafe fn create_and_build_acceleration_structure(
-        index_buffer: &DeviceBuffer,
-        vertex_buffer: &DeviceBuffer,
-        face_count: usize,
-        vertex_count: usize,
         context: &'a DeviceContext,
+        geometry: &MeshGeometry<'a>,
     ) -> VkResult<(DeviceBuffer<'a>, vk::AccelerationStructureKHR)> {
 
         let accel_geometry_data = vk::AccelerationStructureGeometryDataKHR {
             triangles: AccelerationStructureGeometryTrianglesDataKHR::builder()
                 .vertex_format(vk::Format::R32G32B32_SFLOAT)
-                .vertex_data(vertex_buffer.get_device_or_host_address_const())
-                .vertex_stride(std::mem::size_of::<[f32; 3]>() as u64)
-                .max_vertex(vertex_count as u32 - 1)
+                .vertex_data(vk::DeviceOrHostAddressConstKHR { device_address: geometry.position_region })
+                .vertex_stride(std::mem::size_of::<[f32; 4]>() as u64)
+                .max_vertex(geometry.vertex_count as u32 - 1)
                 .index_type(vk::IndexType::UINT32)
-                .index_data(index_buffer.get_device_or_host_address_const())
+                .index_data(vk::DeviceOrHostAddressConstKHR { device_address: geometry.index_region })
                 .build(),
         };
         
@@ -197,7 +184,7 @@ impl<'a> Mesh<'a> {
             .build();
 
         let accel_build_sizes = context.extensions().acceleration_structure
-            .get_acceleration_structure_build_sizes(vk::AccelerationStructureBuildTypeKHR::DEVICE, &build_info, &[face_count as u32]);
+            .get_acceleration_structure_build_sizes(vk::AccelerationStructureBuildTypeKHR::DEVICE, &build_info, &[geometry.face_count as u32]);
     
         println!("Blas buffer size: {}", accel_build_sizes.acceleration_structure_size);
 
@@ -225,7 +212,7 @@ impl<'a> Mesh<'a> {
 
         let accel_build_range = vk::AccelerationStructureBuildRangeInfoKHR::builder()
             .primitive_offset(0)
-            .primitive_count(face_count as u32)
+            .primitive_count(geometry.face_count as u32)
             .first_vertex(0)
             .transform_offset(0)
             .build();
@@ -263,6 +250,18 @@ impl<'a> Mesh<'a> {
             .acceleration_structure(self.accel_structure);
 
         self.context.extensions().acceleration_structure.get_acceleration_structure_device_address(&info)
+    }
+
+    pub unsafe fn index_address(&self) -> vk::DeviceAddress {
+        self.geometry.index_region
+    }
+
+    pub unsafe fn position_address(&self) -> vk::DeviceAddress {
+        self.geometry.position_region
+    }
+
+    pub unsafe fn normal_address(&self) -> vk::DeviceAddress {
+        self.geometry.normal_region
     }
 
 }
