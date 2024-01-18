@@ -1,3 +1,5 @@
 /target
+/resources
+/shader_bin
 output.png
 log.txt
