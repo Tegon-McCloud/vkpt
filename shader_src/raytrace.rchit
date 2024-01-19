@@ -1,9 +1,10 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
 #extension GL_EXT_buffer_reference : require
-#extension GL_EXT_nonuniform_qualifier : enable
-#extension GL_GOOGLE_include_directive : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_GOOGLE_include_directive : enable
+
+#include "../shader_include/definitions.glsl"
 
 // struct packedVertex {
 //     vec4 positionAndTexcoord1;
@@ -26,7 +27,8 @@ layout(shaderRecordEXT, std430) buffer sbtData {
 };
 
 layout(location = 0) rayPayloadInEXT vec3 color;
-layout(location = 0) callableDataEXT vec3 callData;
+
+layout(location = 0) callableDataEXT brdfEvaluation evaluation;
 
 hitAttributeEXT vec2 attribs;
 
@@ -51,5 +53,9 @@ void main() {
 
     executeCallableEXT(materialIndex, 0);
 
-    color = 0.5 * normalize(bc.x * n0 + bc.y * n1 + bc.z * n2) + 0.5;
+    vec3 normal = normalize(bc.x * n0 + bc.y * n1 + bc.z * n2) + 0.5;
+
+    vec3 light_dir = normalize(vec3(-1.0, -1.0, -1.0));
+
+    color = evaluation.weight * max(dot(-light_dir, normal), 0.0);
 }

@@ -225,6 +225,7 @@ impl DeviceContext {
             khr::DeferredHostOperations::name().as_ptr(),
             khr::AccelerationStructure::name().as_ptr(),
             khr::RayTracingPipeline::name().as_ptr(),
+            CStr::from_bytes_with_nul(b"VK_KHR_pipeline_library\0").unwrap().as_ptr(),
         ];
 
         let features = vk::PhysicalDeviceFeatures::builder()
@@ -249,6 +250,12 @@ impl DeviceContext {
             .ray_tracing_pipeline(true)
             .build();
 
+        let mut pipeline_library_group_handles_features = vk::PhysicalDevicePipelineLibraryGroupHandlesFeaturesEXT {
+            pipeline_library_group_handles: vk::TRUE,
+            ..Default::default()
+        };
+    
+
         // let extension_properties = unsafe { instance.enumerate_device_extension_properties(physical_device)? };
 
         // for props in extension_properties {
@@ -266,7 +273,8 @@ impl DeviceContext {
             .push_next(&mut features12)
             .push_next(&mut features13)
             .push_next(&mut accel_features)
-            .push_next(&mut ray_tracing_features);
+            .push_next(&mut ray_tracing_features)
+            .push_next(&mut pipeline_library_group_handles_features);
         
         let device = unsafe { instance.create_device(physical_device, &info, None)? };
 

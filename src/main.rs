@@ -4,95 +4,23 @@
 
 use std::{path::Path, fs::File, ffi::CStr, os::windows::fs::MetadataExt, io::Read};
 
-use ash::{vk::{self, Packed24_8, DeviceAddress}, prelude::VkResult};
+use ash::{vk, prelude::VkResult};
 use itertools::Itertools;
 
 use context::DeviceContext;
-use nalgebra::{Matrix4, Vector3};
 use resource::{Image, ReadBackBuffer};
-use mesh::Mesh;
-use scene::{Scene, SceneDescription};
+use scene::SceneDescription;
 use shader_binding_table::ShaderBindingTableBuilder;
 
-use crate::resource::{UploadBuffer, DeviceBuffer};
+use crate::util::as_u8_slice;
+
 pub mod util;
 pub mod context;
 pub mod resource;
-pub mod mesh;
 pub mod scene;
 pub mod shader_binding_table;
 
 
-// struct Model {
-//     mesh: u64,
-//     transform: [f32; 12],
-// }
-
-// struct Scene<'a> {
-//     context: &'a DeviceContext,
-//     meshes: Vec<Mesh<'a>>,  
-//     models: Vec<Model>,
-
-//     tlas: vk::AccelerationStructureKHR,
-//     tlas_buffer: DeviceBuffer<'a>
-// }
-
-fn add_node(
-    scene_description: &mut SceneDescription,
-    mesh_ids: &[usize],
-    node: gltf::Node<'_>,
-    mut transform: Matrix4<f32>
-) {
-    let local_transform = node.transform().matrix(); 
-    let local_transform = Matrix4::from_fn(|i, j| local_transform[j][i]);
-
-    transform = local_transform * transform;
-    
-    if let Some(gltf_mesh) = node.mesh() {
-
-        let mesh_id = mesh_ids[gltf_mesh.index()];
-        scene_description.add_instance(mesh_id, transform, 0)
-    }
-
-    for child in node.children() {
-        add_node(scene_description, mesh_ids, child, transform);
-    }
-}
-
-fn load<P: AsRef<Path>>(path: P, context: &DeviceContext) -> VkResult<Scene> {
-
-    let (document, buffers, _images) = gltf::import(path).expect("failed to import scene");
-
-    let mut scene_description = SceneDescription::new();
-
-    let mut mesh_ids = Vec::new();
-
-    for mesh in document.meshes() {
-        for primitive in mesh.primitives() {
-
-            let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
-            let face_iter = reader.read_indices()
-                .unwrap()
-                .into_u32()
-                .array_chunks();
-            
-            let position_iter = reader.read_positions().unwrap();
-            let normal_iter = reader.read_normals().unwrap();
-            unsafe {
-                let mesh_id = scene_description.add_mesh(Mesh::new(context, face_iter, position_iter, normal_iter)?);
-                mesh_ids.push(mesh_id);
-            }
-        }
-    }
-
-    if let Some(scene) = document.default_scene() {
-        for node in scene.nodes() {
-            add_node(&mut scene_description, &mesh_ids, node, Matrix4::identity());
-        }
-    }
-
-    scene_description.build(context)
-}    
 
 pub fn create_descriptor_set<'a>(
     context: &'a DeviceContext,
@@ -314,32 +242,18 @@ impl<'a> SampleTarget<'a> {
 #[repr(C)]
 struct HitGroupSbtData {
     material_index: u32,
-    face_address: DeviceAddress,
-    position_address: DeviceAddress,
-    normal_address: DeviceAddress,
+    face_address: vk::DeviceAddress,
+    position_address: vk::DeviceAddress,
+    normal_address: vk::DeviceAddress,
 }
 
 fn main() {
 
     let context = DeviceContext::new().expect("failed to create device context");
 
-    let scene = load("./resources/bunny.gltf", &context).unwrap();
-
-    // let mesh = unsafe {
-    //     let positions = [
-    //         [0.0, 0.0, 0.0],
-    //         [1.0, 0.0, 0.0],
-    //         [0.0, 1.0, 0.0],
-    //         [1.0, 1.0, 0.0],
-    //     ];
-
-    //     let indices = [
-    //         [0, 1, 2],
-    //         [3, 2, 1],
-    //     ];
-
-    //     Mesh::new(positions.iter().copied(), indices.iter().copied(), &context).unwrap()
-    // };
+    let mut scene_description = SceneDescription::new();
+    scene_description.load("./resources/bunny.gltf", &context).unwrap();
+    let scene = scene_description.build(&context).unwrap();
 
     let entry_point_name = unsafe {
         CStr::from_bytes_with_nul_unchecked(b"main\0")
@@ -353,10 +267,51 @@ fn main() {
     
     let (descriptor_set, descriptor_set_layout, descriptor_pool) = create_descriptor_set(&context, scene.tlas(), sample_view).unwrap();
 
+    let library_interface_info = vk::RayTracingPipelineInterfaceCreateInfoKHR::builder()
+        .max_pipeline_ray_payload_size(32)
+        .max_pipeline_ray_hit_attribute_size(8);
+
+    let material_pipeline_layout_info = vk::PipelineLayoutCreateInfo::builder();
+    let material_pipeline_layout = unsafe { context.device().create_pipeline_layout(&material_pipeline_layout_info, None).unwrap() };
+
+    let lambertian_module = unsafe { create_shader_module("shader_bin/lambertian.rcall.spv", &context).unwrap() };
+
+    let lambertian_stage_info = vk::PipelineShaderStageCreateInfo::builder()
+        .stage(vk::ShaderStageFlags::CALLABLE_KHR)
+        .module(lambertian_module)
+        .name(entry_point_name)
+        .build();
+
+    let lambertian_group_info = vk::RayTracingShaderGroupCreateInfoKHR::builder()
+        .ty(vk::RayTracingShaderGroupTypeKHR::GENERAL)
+        .general_shader(0)
+        .any_hit_shader(vk::SHADER_UNUSED_KHR)
+        .closest_hit_shader(vk::SHADER_UNUSED_KHR)
+        .intersection_shader(vk::SHADER_UNUSED_KHR)
+        .build();
+
+    let material_pipeline_info = vk::RayTracingPipelineCreateInfoKHR::builder()
+        .flags(vk::PipelineCreateFlags::LIBRARY_KHR)
+        .stages(std::slice::from_ref(&lambertian_stage_info))
+        .groups(std::slice::from_ref(&lambertian_group_info))
+        .max_pipeline_ray_recursion_depth(3)
+        .layout(material_pipeline_layout)
+        .library_interface(&library_interface_info)
+        .build();
+
+    let material_pipeline = unsafe {
+        context.extensions().ray_tracing_pipeline.create_ray_tracing_pipelines(
+            vk::DeferredOperationKHR::null(),
+            vk::PipelineCache::null(),
+            std::slice::from_ref(&material_pipeline_info),
+            None
+        ).unwrap()[0]
+    };
+
+    
     let raygen_module = unsafe { create_shader_module("shader_bin/raytrace.rgen.spv", &context).unwrap() };
     let miss_module = unsafe { create_shader_module("shader_bin/raytrace.rmiss.spv", &context).unwrap() };
     let closest_hit_module = unsafe { create_shader_module("shader_bin/raytrace.rchit.spv", &context).unwrap() };
-    let callable_module = unsafe { create_shader_module("shader_bin/test.rcall.spv", &context).unwrap() };
 
     let raygen_shader_stage_info = vk::PipelineShaderStageCreateInfo::builder()
         .stage(vk::ShaderStageFlags::RAYGEN_KHR)
@@ -375,14 +330,8 @@ fn main() {
         .module(closest_hit_module)
         .name(entry_point_name)
         .build();
-    
-    let callable_stage_info = vk::PipelineShaderStageCreateInfo::builder()
-        .stage(vk::ShaderStageFlags::CALLABLE_KHR)
-        .module(callable_module)
-        .name(entry_point_name)
-        .build();
 
-    let stage_infos = [raygen_shader_stage_info, miss_shader_stage_info, closest_hit_stage_info, callable_stage_info];
+    let stage_infos = [raygen_shader_stage_info, miss_shader_stage_info, closest_hit_stage_info];
 
     let raygen_group_info = general_shader_group_info(0);
     let miss_group_info = general_shader_group_info(1);
@@ -393,21 +342,25 @@ fn main() {
         .general_shader(vk::SHADER_UNUSED_KHR)
         .ty(vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP)
         .build();
-    let callable_info = general_shader_group_info(3);
-
     
-    let group_infos = [raygen_group_info, miss_group_info, hit_group_info, callable_info];
+    let group_infos = [raygen_group_info, miss_group_info, hit_group_info];
 
     let pipeline_layout_info = vk::PipelineLayoutCreateInfo::builder()
         .set_layouts(std::slice::from_ref(&descriptor_set_layout));
 
     let pipeline_layout = unsafe { context.device().create_pipeline_layout(&pipeline_layout_info, None).unwrap() };
 
+
+    let library_info = vk::PipelineLibraryCreateInfoKHR::builder()
+        .libraries(std::slice::from_ref(&material_pipeline));
+    
     let pipeline_info = vk::RayTracingPipelineCreateInfoKHR::builder()
         .stages(&stage_infos)
         .groups(&group_infos)
         .max_pipeline_ray_recursion_depth(3)
         .layout(pipeline_layout)
+        .library_info(&library_info)
+        .library_interface(&library_interface_info)
         .build();
 
     let pipeline = unsafe {
@@ -430,12 +383,22 @@ fn main() {
 
     let mut sbt_builder = ShaderBindingTableBuilder::new(&context);
 
-    sbt_builder.push_raygen_entry(0, &[]);
-    sbt_builder.push_miss_entry(1, &[]);
-    sbt_builder.push_hit_group_entry(2, unsafe { util::as_u8_slice(&hit_group_data) });
-    sbt_builder.push_callable_entry(3, &[]);
+    sbt_builder.push_raygen_entry(0, 0, &[]);
+    sbt_builder.push_miss_entry(0, 1, &[]);
+    sbt_builder.push_hit_group_entry(0, 2, unsafe { util::as_u8_slice(&hit_group_data) });
+
+    #[repr(C)]
+    struct LambertianData {
+        color: [f32; 4],
+    }
+
+    let lambertian_data  = LambertianData {
+        color: [1.0, 0.0, 0.0, 1.0],
+    };
+
+    sbt_builder.push_callable_entry(1, 0, unsafe { util::as_u8_slice(&lambertian_data) });
     
-    let sbt = sbt_builder.build(pipeline, 4).unwrap();
+    let sbt = sbt_builder.build(&[pipeline, material_pipeline], &[3, 1]).unwrap();
 
     let readback_buffer = ReadBackBuffer::new(
         &context,
@@ -579,7 +542,11 @@ fn main() {
         context.device().destroy_shader_module(raygen_module, None);
         context.device().destroy_shader_module(miss_module, None);
         context.device().destroy_shader_module(closest_hit_module, None);
-        context.device().destroy_shader_module(callable_module, None);
+
+        context.device().destroy_pipeline(material_pipeline, None);
+        context.device().destroy_pipeline_layout(material_pipeline_layout, None);
+
+        context.device().destroy_shader_module(lambertian_module, None);
 
         //context.device().free_descriptor_sets(descriptor_pool, &[descriptor_set]).unwrap();
         context.device().destroy_descriptor_set_layout(descriptor_set_layout, None);

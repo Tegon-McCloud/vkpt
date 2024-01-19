@@ -1,10 +1,9 @@
 use ash::{prelude::VkResult, vk::{self, StridedDeviceAddressRegionKHR}};
-
 use crate::{context::DeviceContext, resource::UploadBuffer, util};
 
-// struct PipelineLibrary {
+// struct PipelineReference {
 //     pipeline: vk::Pipeline,
-//     shader_group_count: u64,
+//     shader_group_count: u32,
 // }
 
 #[derive(Debug, Clone, Copy)]
@@ -41,6 +40,7 @@ impl AlignmentInfo {
 
 
 struct Entry {
+    pipeline: u32,
     shader_group: u32,
     data_offset: usize,
     data_size: usize,
@@ -63,23 +63,32 @@ impl<'a> ShaderBindingTableBuilder<'a> {
         }
     }
 
-    pub fn push_raygen_entry(&mut self, shader_group: u32, data: &[u8]) {
-        self.push_entry(0, shader_group, data);
+    pub fn push_raygen_entry(&mut self, pipeline: u32, shader_group: u32, data: &[u8]) {
+        self.push_entry(0, pipeline, shader_group, data);
     }
 
-    pub fn push_miss_entry(&mut self, shader_group: u32, data: &[u8]) {
-        self.push_entry(1, shader_group, data);
+    pub fn push_miss_entry(&mut self, pipeline: u32, shader_group: u32, data: &[u8]) {
+        self.push_entry(1, pipeline, shader_group, data);
     }
 
-    pub fn push_hit_group_entry(&mut self, shader_group: u32, data: &[u8]) {
-        self.push_entry(2, shader_group, data);
+    pub fn push_hit_group_entry(&mut self, pipeline: u32, shader_group: u32, data: &[u8]) {
+        self.push_entry(2, pipeline, shader_group, data);
     }
 
-    pub fn push_callable_entry(&mut self, shader_group: u32, data: &[u8]) {
-        self.push_entry(3, shader_group, data);
+    pub fn push_callable_entry(&mut self, pipeline: u32, shader_group: u32, data: &[u8]) {
+        self.push_entry(3, pipeline, shader_group, data);
     }
 
-    pub fn build(&self, pipeline: vk::Pipeline, group_count: u32) -> VkResult<ShaderBindingTable> {
+    fn push_entry(&mut self, index: usize, pipeline: u32, shader_group: u32, data: &[u8]) {
+        let data_offset = self.data.len();
+        let data_size = data.len();
+
+        self.data.extend(data);
+
+        self.entries[index].push(Entry { pipeline, shader_group, data_offset, data_size });
+    }
+
+    pub fn build(&self, pipelines: &[vk::Pipeline], group_counts: &[u32]) -> VkResult<ShaderBindingTable> {
     
         let align_info = AlignmentInfo::for_context(self.context);
 
@@ -108,16 +117,24 @@ impl<'a> ShaderBindingTableBuilder<'a> {
             vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR
         )?;
 
-        let handle_data_size = group_count as u64 * align_info.handle_size;
-        let handle_data = unsafe { self.context.extensions()
-                .ray_tracing_pipeline
-                .get_ray_tracing_shader_group_handles(pipeline, 0, group_count, handle_data_size as usize)? };
 
-        let get_handle = |shader_group: u32| -> &[u8] {
+        let handle_data = pipelines.iter().zip(group_counts.iter())
+            .map(|(&pipeline, &group_count)| unsafe {
+                
+                let handle_data_size = group_count as u64 * align_info.handle_size;
+                self.context.extensions()
+                    .ray_tracing_pipeline
+                    .get_ray_tracing_shader_group_handles(pipeline, 0, group_count, handle_data_size as usize)
+            })
+            .collect::<VkResult<Vec<_>>>()?;
+            
+
+
+        let get_handle = |pipeline: u32, shader_group: u32| -> &[u8] {
             let handle_begin = shader_group as usize * align_info.handle_size as usize;
             let handle_end = handle_begin + align_info.handle_size as usize;
             
-            &handle_data[handle_begin..handle_end]
+            &handle_data[pipeline as usize][handle_begin..handle_end]
         };
         
         for (i, entries) in self.entries.iter().enumerate() {
@@ -129,7 +146,7 @@ impl<'a> ShaderBindingTableBuilder<'a> {
                 let data_offset = handle_offset + align_info.handle_size as usize;
 
                 unsafe {
-                    buffer.write_u8_slice(get_handle(entry.shader_group), handle_offset);
+                    buffer.write_u8_slice(get_handle(entry.pipeline, entry.shader_group), handle_offset);
                     buffer.write_u8_slice(entry_data, data_offset)
                 }
             }
@@ -169,14 +186,7 @@ impl<'a> ShaderBindingTableBuilder<'a> {
         })
     }
 
-    fn push_entry(&mut self, index: usize, shader_group: u32, data: &[u8]) {
-        let data_offset = self.data.len();
-        let data_size = data.len();
 
-        self.data.extend(data);
-
-        self.entries[index].push(Entry { shader_group, data_offset, data_size });
-    }
 }
 
 pub struct ShaderBindingTable<'a> {

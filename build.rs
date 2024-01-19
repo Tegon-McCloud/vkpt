@@ -28,22 +28,31 @@ fn get_shader_kind<P: AsRef<Path>>(path: P) -> shaderc::ShaderKind {
 
 fn main() -> Result<()> {
 
-    println!("cargo:rerun-if-changed=shader_src");
-    println!("cargo:rerun-if-changed=shader_bin");
-    
-
-    let shader_compiler = shaderc::Compiler::new().unwrap();
-    let mut compile_options = shaderc::CompileOptions::new().unwrap();
-    
-    compile_options.set_target_spirv(shaderc::SpirvVersion::V1_6);
-    compile_options.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_3 as u32);
-
-    // options.add_macro_definition("EP", Some("main"));
-
+    let in_dir = PathBuf::from("shader_src");
     let out_dir = PathBuf::from("shader_bin");
     std::fs::create_dir_all(&out_dir)?;
 
-    for entry in std::fs::read_dir("shader_src")? {
+    println!("cargo:rerun-if-changed=shader_src");
+    println!("cargo:rerun-if-changed=shader_bin");
+
+    let shader_compiler = shaderc::Compiler::new().unwrap();
+    let mut compile_options = shaderc::CompileOptions::new().unwrap();
+
+    compile_options.set_target_spirv(shaderc::SpirvVersion::V1_6);
+    compile_options.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_3 as u32);
+    compile_options.set_include_callback(|include_name, _include_type, _src_name, _depth| {
+
+        let include_path = std::fs::canonicalize(in_dir.as_path().join(include_name)).map_err(|err| err.to_string())?;
+        let content = std::fs::read_to_string(&include_path).map_err(|err| err.to_string())?;
+
+        Ok(shaderc::ResolvedInclude {
+            resolved_name: include_path.to_string_lossy().into_owned(),
+            content,
+        })
+    });
+
+
+    for entry in std::fs::read_dir(&in_dir)? {
 
         let entry = entry?;
 
