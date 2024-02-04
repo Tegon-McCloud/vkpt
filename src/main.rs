@@ -12,14 +12,15 @@ use resource::{Image, ReadBackBuffer};
 use scene::SceneDescription;
 use shader_binding_table::ShaderBindingTableBuilder;
 
-use crate::util::as_u8_slice;
+use crate::pipeline::{Pipeline, Shader};
+
 
 pub mod util;
 pub mod context;
 pub mod resource;
-pub mod scene;
+pub mod pipeline;
 pub mod shader_binding_table;
-
+pub mod scene;
 
 
 pub fn create_descriptor_set<'a>(
@@ -308,27 +309,36 @@ fn main() {
         ).unwrap()[0]
     };
 
+    let raygen_shader = unsafe {
+        Shader::new(&context, "shader_bin/raytrace.rgen.spv", entry_point_name.to_owned(), vec![descriptor_set_layout]).unwrap()
+    };
+
+    let miss_shader = unsafe { 
+        Shader::new(&context, "shader_bin/raytrace.rmiss.spv", entry_point_name.to_owned(), vec![]).unwrap()
+    };
     
-    let raygen_module = unsafe { create_shader_module("shader_bin/raytrace.rgen.spv", &context).unwrap() };
-    let miss_module = unsafe { create_shader_module("shader_bin/raytrace.rmiss.spv", &context).unwrap() };
-    let closest_hit_module = unsafe { create_shader_module("shader_bin/raytrace.rchit.spv", &context).unwrap() };
+    let closest_hit_shader = unsafe {
+        Shader::new(&context, "shader_bin/raytrace.rchit.spv", entry_point_name.to_owned(), vec![]).unwrap()
+    };
+
+
 
     let raygen_shader_stage_info = vk::PipelineShaderStageCreateInfo::builder()
         .stage(vk::ShaderStageFlags::RAYGEN_KHR)
-        .module(raygen_module)
-        .name(entry_point_name)
+        .module(raygen_shader.module())
+        .name(raygen_shader.entry_point())
         .build();
 
     let miss_shader_stage_info = vk::PipelineShaderStageCreateInfo::builder()
         .stage(vk::ShaderStageFlags::MISS_KHR)
-        .module(miss_module)
-        .name(entry_point_name)
+        .module(miss_shader.module())
+        .name(miss_shader.entry_point())
         .build();
 
     let closest_hit_stage_info = vk::PipelineShaderStageCreateInfo::builder()
         .stage(vk::ShaderStageFlags::CLOSEST_HIT_KHR)
-        .module(closest_hit_module)
-        .name(entry_point_name)
+        .module(closest_hit_shader.module())
+        .name(closest_hit_shader.entry_point())
         .build();
 
     let stage_infos = [raygen_shader_stage_info, miss_shader_stage_info, closest_hit_stage_info];
@@ -342,36 +352,19 @@ fn main() {
         .general_shader(vk::SHADER_UNUSED_KHR)
         .ty(vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP)
         .build();
-    
+
     let group_infos = [raygen_group_info, miss_group_info, hit_group_info];
 
-    let pipeline_layout_info = vk::PipelineLayoutCreateInfo::builder()
-        .set_layouts(std::slice::from_ref(&descriptor_set_layout));
-
-    let pipeline_layout = unsafe { context.device().create_pipeline_layout(&pipeline_layout_info, None).unwrap() };
-
-
-    let library_info = vk::PipelineLibraryCreateInfoKHR::builder()
-        .libraries(std::slice::from_ref(&material_pipeline));
-    
-    let pipeline_info = vk::RayTracingPipelineCreateInfoKHR::builder()
-        .stages(&stage_infos)
-        .groups(&group_infos)
-        .max_pipeline_ray_recursion_depth(3)
-        .layout(pipeline_layout)
-        .library_info(&library_info)
-        .library_interface(&library_interface_info)
-        .build();
-
     let pipeline = unsafe {
-        context.extensions().ray_tracing_pipeline.create_ray_tracing_pipelines(
-            vk::DeferredOperationKHR::null(),
-            vk::PipelineCache::null(),
-            std::slice::from_ref(&pipeline_info),
-            None
-        ).unwrap()[0]
+        Pipeline::new(
+            &context,
+            vec![raygen_shader, miss_shader, closest_hit_shader],
+            &stage_infos,
+            &group_infos,
+            Some((&[material_pipeline], library_interface_info.build()))
+        ).unwrap()
     };
-
+    
     let hit_group_data = unsafe {
         HitGroupSbtData {
             material_index: 0,
@@ -398,8 +391,8 @@ fn main() {
 
     sbt_builder.push_callable_entry(1, 0, unsafe { util::as_u8_slice(&lambertian_data) });
     
-    let sbt = sbt_builder.build(&[pipeline, material_pipeline], &[3, 1]).unwrap();
-
+    let sbt = sbt_builder.build(&[pipeline.pipeline(), material_pipeline], &[3, 1]).unwrap();
+    
     let readback_buffer = ReadBackBuffer::new(
         &context,
         std::mem::size_of::<f32>() as u64 * 4 * img_width as u64 * img_height as u64,
@@ -436,8 +429,8 @@ fn main() {
             }
 
             { // trace rays
-                context.device().cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::RAY_TRACING_KHR, pipeline);
-                context.device().cmd_bind_descriptor_sets(cmd_buffer, vk::PipelineBindPoint::RAY_TRACING_KHR, pipeline_layout, 0, &[descriptor_set], &[]);
+                context.device().cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::RAY_TRACING_KHR, pipeline.pipeline());
+                context.device().cmd_bind_descriptor_sets(cmd_buffer, vk::PipelineBindPoint::RAY_TRACING_KHR, pipeline.layout(), 0, &[descriptor_set], &[]);
                 context.extensions().ray_tracing_pipeline.cmd_trace_rays(
                     cmd_buffer,
                     &sbt.raygen_region(),
@@ -536,13 +529,6 @@ fn main() {
     }
     
     unsafe {
-        context.device().destroy_pipeline(pipeline, None);
-        context.device().destroy_pipeline_layout(pipeline_layout, None);
-
-        context.device().destroy_shader_module(raygen_module, None);
-        context.device().destroy_shader_module(miss_module, None);
-        context.device().destroy_shader_module(closest_hit_module, None);
-
         context.device().destroy_pipeline(material_pipeline, None);
         context.device().destroy_pipeline_layout(material_pipeline_layout, None);
 

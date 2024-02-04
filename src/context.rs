@@ -448,9 +448,50 @@ impl DeviceContext {
         self.device.get_buffer_device_address(info)
     }
 
-    // 
-    
+    // Descriptors
 
+    // Pipeline
+
+    pub unsafe fn create_shader_module(&self, create_info: &vk::ShaderModuleCreateInfo) -> VkResult<vk::ShaderModule> {
+        self.device.create_shader_module(create_info, None)
+    } 
+
+    pub unsafe fn destroy_shader_module(&self, module: vk::ShaderModule) {
+        self.device.destroy_shader_module(module, None)
+    }
+    
+    pub unsafe fn create_pipeline_layout(&self, create_info: &vk::PipelineLayoutCreateInfo) -> VkResult<vk::PipelineLayout> {
+        self.device.create_pipeline_layout(create_info, None)
+    }
+
+    pub unsafe fn destroy_pipeline_layout(&self, layout: vk::PipelineLayout) {
+        self.device.destroy_pipeline_layout(layout, None)
+    }
+
+    pub unsafe fn create_ray_tracing_pipelines(
+        &self,
+        deferred_operation: Option<vk::DeferredOperationKHR>,
+        pipeline_cache: Option<vk::PipelineCache>,
+        create_infos: &[vk::RayTracingPipelineCreateInfoKHR]
+    ) -> VkResult<Vec<vk::Pipeline>> {
+        self.extensions.ray_tracing_pipeline.create_ray_tracing_pipelines(
+            deferred_operation.unwrap_or(vk::DeferredOperationKHR::null()),
+            pipeline_cache.unwrap_or(vk::PipelineCache::null()),
+            create_infos,
+            None
+        )
+    }
+
+    pub unsafe fn destroy_pipeline(&self, pipeline: vk::Pipeline) {
+        self.device.destroy_pipeline(pipeline, None)
+    }
+
+    pub unsafe fn get_ray_tracing_shader_group_handles(&self, pipeline: vk::Pipeline, first_group: u32, group_count: u32) -> VkResult<Vec<u8>> {
+        let stride = self.physical_device.ray_tracing_pipeline_properties.shader_group_handle_size;
+        let data_size = (stride * group_count) as usize;
+
+        self.extensions.ray_tracing_pipeline.get_ray_tracing_shader_group_handles(pipeline, first_group, group_count, data_size)
+    }
 
 }
 
