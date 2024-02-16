@@ -3,7 +3,7 @@ use std::path::Path;
 use ash::{vk, prelude::VkResult};
 use nalgebra::{Matrix3x4, Matrix4};
 
-use crate::{context::DeviceContext, resource::{DeviceBuffer, UploadBuffer}, util};
+use crate::{context::DeviceContext, resource::{DeviceBuffer, UploadBuffer}, shader_binding_table::ShaderBindingTableBuilder, util};
 
 use self::mesh::Mesh;
 
@@ -99,6 +99,7 @@ impl<'a> SceneDescription<'a> {
 
             let (tlas_buffer, tlas) = self.build_tlas(context)?;
             
+
             Ok(Scene {
                 context,
                 meshes: self.meshes,
@@ -110,11 +111,15 @@ impl<'a> SceneDescription<'a> {
 
     unsafe fn build_tlas(&self, context: &'a DeviceContext) -> VkResult<(DeviceBuffer<'a>, vk::AccelerationStructureKHR)> {
         let blas_instance_iter = self.instances.iter()
-            .map(|instance|
+            .enumerate()
+            .map(|(i, instance)|
                 vk::AccelerationStructureInstanceKHR {
                     transform: util::matrix_to_vk_transform(instance.transform),
                     instance_custom_index_and_mask: vk::Packed24_8::new(0, 0xff),
-                    instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(0, vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8),
+                    instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
+                        i as u32,
+                        vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8
+                    ),
                     acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
                         device_handle: self.meshes[instance.mesh_id].get_accel_structure_device_address()
                     },

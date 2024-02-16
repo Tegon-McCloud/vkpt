@@ -1,4 +1,4 @@
-use std::{ffi::{CStr, CString}, fs::File, io::{Read, Seek, SeekFrom}, path::{Path, PathBuf}};
+use std::{ffi::{CStr, CString}, fs::File, io::{Read, Seek, SeekFrom}, path::Path};
 
 use ash::{prelude::VkResult, vk};
 use itertools::Itertools;
@@ -241,99 +241,149 @@ impl<'a> Drop for Shader<'a> {
 //     } 
 
 // }
-
-pub struct ShaderDescription {
-    spv_path: PathBuf,
-    entry_point: CString,
-    stage: vk::ShaderStageFlags,
-    resource_layout: Vec<vk::DescriptorSetLayout>,
-}
-
-pub enum ShaderGroup {
+#[derive(Clone, Copy)]
+pub enum ShaderGroup<'ctx, 'a> {
     Raygen {
-        raygen_stage: u32,
+        raygen: &'a Shader<'ctx>,
     },
 
     Miss {
-        miss_stage: u32,
+        miss: &'a Shader<'ctx>,
     },
 
     TriangleHit {
-        closest_hit_stage: u32,
+        closest_hit: &'a Shader<'ctx>,
     },
 
     Callable {
-        callable_stage: u32,
+        callable: &'a Shader<'ctx>,
     },
 }
 
-pub struct PipelineDescription {
-    stages: Vec<ShaderDescription>,
-    shader_groups: Vec<ShaderGroup>,
+pub struct ShaderGroupHandle(usize);
+
+pub struct PipelineDescription<'ctx, 'a> {
+    shader_groups: Vec<ShaderGroup<'ctx, 'a>>,
 }
 
-impl PipelineDescription {
+impl<'ctx, 'a> PipelineDescription<'ctx, 'a> {
 
     pub fn new() -> Self {
         Self {
-            stages: Vec::new(),
             shader_groups: Vec::new(),
         }
     }
+    
+    pub fn add_group(&mut self, group: ShaderGroup<'ctx, 'a>) -> ShaderGroupHandle {
+        self.shader_groups.push(group);
+        ShaderGroupHandle(self.shader_groups.len() - 1)
+    }
 
-    pub unsafe fn build<'a>(&self, context: &'a DeviceContext) -> VkResult<Pipeline<'a>> {
-        let mut stages = Vec::with_capacity(self.stages.len());
-        let mut stage_infos = Vec::with_capacity(self.stages.len());
+    pub unsafe fn build(&self, context: &'ctx DeviceContext) -> VkResult<Pipeline<'ctx>> {
 
-        for stage_desc in &self.stages {
-            let shader = Shader::new(context, stage_desc.spv_path.clone(), stage_desc.entry_point.clone(),  stage_desc.resource_layout.clone())?;
-            
-            let stage_info = vk::PipelineShaderStageCreateInfo::builder()
-                .stage(stage_desc.stage)
-                .module(shader.module())
-                .name(&shader.entry_point)
-                .build();
+        let mut stages = vec![];
+        let mut stage_infos = vec![];
+        let mut group_infos = vec![]; 
 
-            stages.push(shader);
-            stage_infos.push(stage_info);
+        for &shader_group in &self.shader_groups {
+            match shader_group {
+                ShaderGroup::Raygen { raygen } => {
+                    stages.push(raygen);
+                    stage_infos.push(
+                        vk::PipelineShaderStageCreateInfo::builder()
+                            .module(raygen.module())
+                            .name(&raygen.entry_point)
+                            .stage(vk::ShaderStageFlags::RAYGEN_KHR)
+                            .build()
+                    );
+                    let stage_index = stage_infos.len() - 1;
+
+                    group_infos.push(
+                        vk::RayTracingShaderGroupCreateInfoKHR::builder()
+                            .ty(vk::RayTracingShaderGroupTypeKHR::GENERAL)
+                            .general_shader(stage_index as u32)
+                            .closest_hit_shader(vk::SHADER_UNUSED_KHR)
+                            .any_hit_shader(vk::SHADER_UNUSED_KHR)
+                            .intersection_shader(vk::SHADER_UNUSED_KHR)
+                            .build()
+                    );
+                },
+
+                ShaderGroup::Miss { miss } => {
+                    stages.push(miss);
+                    stage_infos.push(
+                        vk::PipelineShaderStageCreateInfo::builder()
+                            .module(miss.module())
+                            .name(&miss.entry_point)
+                            .stage(vk::ShaderStageFlags::MISS_KHR)
+                            .build()
+                    );
+                    let stage_index = stage_infos.len() - 1;
+
+                    group_infos.push(
+                        vk::RayTracingShaderGroupCreateInfoKHR::builder()
+                            .ty(vk::RayTracingShaderGroupTypeKHR::GENERAL)
+                            .general_shader(stage_index as u32)
+                            .closest_hit_shader(vk::SHADER_UNUSED_KHR)
+                            .any_hit_shader(vk::SHADER_UNUSED_KHR)
+                            .intersection_shader(vk::SHADER_UNUSED_KHR)
+                            .build()
+                    );
+                },
+
+                ShaderGroup::TriangleHit { closest_hit } => {
+                    stages.push(closest_hit);
+                    stage_infos.push(
+                        vk::PipelineShaderStageCreateInfo::builder()
+                            .module(closest_hit.module())
+                            .name(&closest_hit.entry_point)
+                            .stage(vk::ShaderStageFlags::CLOSEST_HIT_KHR)
+                            .build()
+                    );
+                    let closest_hit_stage_index = stage_infos.len() - 1;
+
+                    group_infos.push(
+                        vk::RayTracingShaderGroupCreateInfoKHR::builder()
+                            .ty(vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP)
+                            .general_shader(vk::SHADER_UNUSED_KHR)
+                            .closest_hit_shader(closest_hit_stage_index as u32)
+                            .any_hit_shader(vk::SHADER_UNUSED_KHR)
+                            .intersection_shader(vk::SHADER_UNUSED_KHR)
+                            .build()
+                    );
+                },
+
+                ShaderGroup::Callable { callable } => {
+                    stages.push(callable);
+                    stage_infos.push(
+                        vk::PipelineShaderStageCreateInfo::builder()
+                            .module(callable.module())
+                            .name(&callable.entry_point)
+                            .stage(vk::ShaderStageFlags::CALLABLE_KHR)
+                            .build()
+                    );
+                    let stage_index = stage_infos.len() - 1;
+
+                    group_infos.push(
+                        vk::RayTracingShaderGroupCreateInfoKHR::builder()
+                            .ty(vk::RayTracingShaderGroupTypeKHR::GENERAL)
+                            .general_shader(stage_index as u32)
+                            .closest_hit_shader(vk::SHADER_UNUSED_KHR)
+                            .any_hit_shader(vk::SHADER_UNUSED_KHR)
+                            .intersection_shader(vk::SHADER_UNUSED_KHR)
+                            .build()
+                    );
+                }
+            }
         }
-
-
-        let group_infos = self.shader_groups.iter()
-            .map(|group| match *group {
-
-                ShaderGroup::Raygen { raygen_stage: general_stage }
-                | ShaderGroup::Miss { miss_stage: general_stage }
-                | ShaderGroup::Callable { callable_stage: general_stage } => {
-                    vk::RayTracingShaderGroupCreateInfoKHR::builder()
-                        .any_hit_shader(vk::SHADER_UNUSED_KHR)
-                        .closest_hit_shader(vk::SHADER_UNUSED_KHR)
-                        .intersection_shader(vk::SHADER_UNUSED_KHR)
-                        .general_shader(general_stage)
-                        .ty(vk::RayTracingShaderGroupTypeKHR::GENERAL)
-                        .build()
-                }
-
-                ShaderGroup::TriangleHit { closest_hit_stage } => {
-                    vk::RayTracingShaderGroupCreateInfoKHR::builder()
-                        .any_hit_shader(vk::SHADER_UNUSED_KHR)
-                        .closest_hit_shader(closest_hit_stage)
-                        .intersection_shader(vk::SHADER_UNUSED_KHR)
-                        .general_shader(vk::SHADER_UNUSED_KHR)
-                        .ty(vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP)
-                        .build()
-                }
-            })
-        .collect_vec();
         
-        Pipeline::new(context, stages, &stage_infos, &group_infos, None)
+        Pipeline::new(context, &stages, &stage_infos, &group_infos, None)
     }
 
 }
 
-pub struct Pipeline<'a> {
-    context: &'a DeviceContext,
-    stages: Vec<Shader<'a>>,
+pub struct Pipeline<'ctx> {
+    context: &'ctx DeviceContext,
     layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
     handle_data: Vec<u8>,
@@ -343,7 +393,7 @@ impl<'a> Pipeline<'a> {
 
     pub unsafe fn new(
         context: &'a DeviceContext,
-        stages: Vec<Shader<'a>>,
+        stages: &[&Shader<'a>],
         stage_infos: &[vk::PipelineShaderStageCreateInfo],
         group_infos: &[vk::RayTracingShaderGroupCreateInfoKHR],
         libraries: Option<(&[vk::Pipeline], vk::RayTracingPipelineInterfaceCreateInfoKHR)>,
@@ -380,12 +430,10 @@ impl<'a> Pipeline<'a> {
 
         Ok(Self {
             context,
-            stages,
             layout,
             pipeline,
             handle_data,
         })
-
     }
 
     pub fn group_count(&self) -> u32 {
