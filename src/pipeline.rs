@@ -260,32 +260,27 @@ pub enum ShaderGroup<'ctx, 'a> {
     },
 }
 
-pub struct ShaderGroupHandle(usize);
-
-pub struct PipelineDescription<'ctx, 'a> {
-    shader_groups: Vec<ShaderGroup<'ctx, 'a>>,
+pub struct Pipeline<'ctx> {
+    context: &'ctx DeviceContext,
+    layout: vk::PipelineLayout,
+    pipeline: vk::Pipeline,
+    handle_data: Vec<u8>,
 }
 
-impl<'ctx, 'a> PipelineDescription<'ctx, 'a> {
+impl<'ctx> Pipeline<'ctx> {
 
-    pub fn new() -> Self {
-        Self {
-            shader_groups: Vec::new(),
-        }
-    }
+
     
-    pub fn add_group(&mut self, group: ShaderGroup<'ctx, 'a>) -> ShaderGroupHandle {
-        self.shader_groups.push(group);
-        ShaderGroupHandle(self.shader_groups.len() - 1)
-    }
-
-    pub unsafe fn build(&self, context: &'ctx DeviceContext) -> VkResult<Pipeline<'ctx>> {
-
+    pub unsafe fn new(
+        context: &'ctx DeviceContext,
+        shader_groups: &[ShaderGroup<'ctx, '_>]
+    ) -> VkResult<Self> {
+        
         let mut stages = vec![];
         let mut stage_infos = vec![];
         let mut group_infos = vec![]; 
 
-        for &shader_group in &self.shader_groups {
+        for &shader_group in shader_groups {
             match shader_group {
                 ShaderGroup::Raygen { raygen } => {
                     stages.push(raygen);
@@ -376,28 +371,6 @@ impl<'ctx, 'a> PipelineDescription<'ctx, 'a> {
                 }
             }
         }
-        
-        Pipeline::new(context, &stages, &stage_infos, &group_infos, None)
-    }
-
-}
-
-pub struct Pipeline<'ctx> {
-    context: &'ctx DeviceContext,
-    layout: vk::PipelineLayout,
-    pipeline: vk::Pipeline,
-    handle_data: Vec<u8>,
-}
-
-impl<'a> Pipeline<'a> {
-
-    pub unsafe fn new(
-        context: &'a DeviceContext,
-        stages: &[&Shader<'a>],
-        stage_infos: &[vk::PipelineShaderStageCreateInfo],
-        group_infos: &[vk::RayTracingShaderGroupCreateInfoKHR],
-        libraries: Option<(&[vk::Pipeline], vk::RayTracingPipelineInterfaceCreateInfoKHR)>,
-    ) -> VkResult<Self> {
 
         let set_layouts = stages.iter()
             .map(|stage| stage.resource_layout.iter().copied())
@@ -408,19 +381,11 @@ impl<'a> Pipeline<'a> {
             .set_layouts(&set_layouts);
 
         let layout = context.create_pipeline_layout(&layout_info)?;
-
-        let (libraries, interface_info) = libraries.unwrap_or_default();
-
-        let library_info = vk::PipelineLibraryCreateInfoKHR::builder()
-            .libraries(&libraries)
-            .build();
-
+        
         let info = vk::RayTracingPipelineCreateInfoKHR::builder()
-            .stages(stage_infos)
-            .groups(group_infos)
+            .stages(&stage_infos)
+            .groups(&group_infos)
             .max_pipeline_ray_recursion_depth(3)
-            .library_info(&library_info)
-            .library_interface(&interface_info)
             .layout(layout)
             .build();
 

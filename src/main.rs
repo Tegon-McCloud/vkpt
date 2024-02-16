@@ -12,7 +12,7 @@ use resource::{Image, ReadBackBuffer};
 use scene::SceneDescription;
 use shader_binding_table::ShaderBindingTableBuilder;
 
-use crate::pipeline::{Pipeline, PipelineDescription, Shader, ShaderGroup};
+use crate::pipeline::{Pipeline, Shader, ShaderGroup};
 
 
 pub mod util;
@@ -277,16 +277,13 @@ fn main() {
         Shader::new(&context, "shader_bin/lambertian.rcall.spv", entry_point_name.to_owned(), vec![]).unwrap()
     };
 
-    let mut pipeline_desc = PipelineDescription::new();
-
-    pipeline_desc.add_group(ShaderGroup::Raygen { raygen: &raygen_shader });
-    pipeline_desc.add_group(ShaderGroup::Miss { miss: &miss_shader });
-    pipeline_desc.add_group(ShaderGroup::TriangleHit { closest_hit: &closest_hit_shader });
-    pipeline_desc.add_group(ShaderGroup::Callable { callable: &lambertian_shader });
-
-
     let pipeline = unsafe {
-        pipeline_desc.build(&context).unwrap()
+        Pipeline::new(&context, &[
+            ShaderGroup::Raygen { raygen: &raygen_shader },
+            ShaderGroup::Miss { miss: &miss_shader },
+            ShaderGroup::TriangleHit { closest_hit: &closest_hit_shader },
+            ShaderGroup::Callable { callable: &lambertian_shader },
+        ]).unwrap()
     };
 
     // let raygen_shader_stage_info = vk::PipelineShaderStageCreateInfo::builder()
@@ -383,7 +380,7 @@ fn main() {
     sbt_builder.push_callable_entry(3, unsafe { util::as_u8_slice(&lambertian_blue_data) });
 
     let sbt = unsafe {
-        sbt_builder.build(pipeline.pipeline(), 4).unwrap()
+        sbt_builder.build(&pipeline).unwrap()
     };
     
     let readback_buffer = ReadBackBuffer::new(

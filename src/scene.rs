@@ -3,7 +3,7 @@ use std::path::Path;
 use ash::{vk, prelude::VkResult};
 use nalgebra::{Matrix3x4, Matrix4};
 
-use crate::{context::DeviceContext, resource::{DeviceBuffer, UploadBuffer}, shader_binding_table::ShaderBindingTableBuilder, util};
+use crate::{context::DeviceContext, resource::{DeviceBuffer, UploadBuffer}, util};
 
 use self::mesh::Mesh;
 
@@ -246,33 +246,3 @@ impl<'a> Drop for Scene<'a> {
     }
 }
 
-// pub struct GeometryInstance {
-//     mesh: usize,
-
-// }
-
-// pub struct Scene<'a> {
-//     context: &'a DeviceContext,
-//     meshes: Vec<Mesh<'a>>,
-//     instances: Vec<GeometryInstance>,
-//     accel_structure: vk::AccelerationStructureKHR,
-// }
-
-// impl<'a> Scene<'a> {
-
-//     pub fn new(
-//         meshes: Vec<Mesh<'a>>,
-//         instances: GeometryInstance,
-//         context: &'a DeviceContext
-//     ) -> VkResult<Self> {
-
-        
-
-//     }
-
-
-//     fn create_and_build_accel_structure() {
-
-//     }
-
-// }

@@ -1,5 +1,5 @@
 use ash::{prelude::VkResult, vk::{self, StridedDeviceAddressRegionKHR}};
-use crate::{context::DeviceContext, resource::UploadBuffer, util};
+use crate::{context::DeviceContext, pipeline::Pipeline, resource::UploadBuffer, util};
 
 // struct PipelineReference {
 //     pipeline: vk::Pipeline,
@@ -45,16 +45,16 @@ struct Entry {
     data_size: usize,
 }
 
-pub struct ShaderBindingTableBuilder<'a> {
-    context: &'a DeviceContext,
+pub struct ShaderBindingTableBuilder<'ctx> {
+    context: &'ctx DeviceContext,
     
     entries: [Vec<Entry>; 4],
     data: Vec<u8>,
 }
 
-impl<'a> ShaderBindingTableBuilder<'a> {
+impl<'ctx> ShaderBindingTableBuilder<'ctx> {
 
-    pub fn new(context: &'a DeviceContext) -> Self {
+    pub fn new(context: &'ctx DeviceContext) -> Self {
         Self {
             context,
             entries: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
@@ -87,8 +87,8 @@ impl<'a> ShaderBindingTableBuilder<'a> {
         self.entries[index].push(Entry { shader_group, data_offset, data_size });
     }
 
-    pub unsafe fn build(&self, pipeline: vk::Pipeline, group_count: u32) -> VkResult<ShaderBindingTable> {
-    
+    pub unsafe fn build(&self, pipeline: &Pipeline<'ctx>) -> VkResult<ShaderBindingTable> {
+        
         let align_info = AlignmentInfo::for_context(self.context);
 
         let mut strides = [0; 4];
@@ -115,19 +115,6 @@ impl<'a> ShaderBindingTableBuilder<'a> {
             buffer_size,
             vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR
         )?;
-
-
-        let handle_data_size = group_count as u64 * align_info.handle_size;
-        let handle_data = self.context.extensions()
-            .ray_tracing_pipeline
-            .get_ray_tracing_shader_group_handles(pipeline, 0, group_count, handle_data_size as usize)?;
-
-        let get_handle = |shader_group: u32| -> &[u8] {
-            let handle_begin = shader_group as usize * align_info.handle_size as usize;
-            let handle_end = handle_begin + align_info.handle_size as usize;
-            
-            &handle_data[handle_begin..handle_end]
-        };
         
         for (i, entries) in self.entries.iter().enumerate() {
             for (j, entry) in entries.iter().enumerate() {
@@ -138,7 +125,7 @@ impl<'a> ShaderBindingTableBuilder<'a> {
                 let data_offset = handle_offset + align_info.handle_size as usize;
 
                 unsafe {
-                    buffer.write_u8_slice(get_handle(entry.shader_group), handle_offset);
+                    buffer.write_u8_slice(pipeline.get_group_handle(entry.shader_group), handle_offset);
                     buffer.write_u8_slice(entry_data, data_offset)
                 }
             }
