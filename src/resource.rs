@@ -2,33 +2,6 @@ use ash::{vk, prelude::VkResult};
 
 use crate::{context::DeviceContext, util};
 
-
-// trait BufferVariant<'a> {
-
-//     fn context(&self) -> &'a DeviceContext;
-//     unsafe fn handle(&self) -> vk::Buffer;
-//     unsafe fn allocation(&self) -> &Allocation
-
-//     pub unsafe fn get_device_address(&self) -> vk::DeviceAddress {
-
-//         let info = vk::BufferDeviceAddressInfo::builder()
-//             .buffer(self.handle());
-
-//         unsafe {
-//             self.context().get_buffer_device_address(&info)
-//         }
-//     }
-
-//     pub unsafe fn get_device_or_host_address_const(&self) -> vk::DeviceOrHostAddressConstKHR {
-//         vk::DeviceOrHostAddressConstKHR {  device_address: self.get_device_address() }
-//     }
-
-//     pub unsafe fn get_device_or_host_address(&self) -> vk::DeviceOrHostAddressKHR {
-//         vk::DeviceOrHostAddressKHR { device_address: self.get_device_address() }
-//     }
-
-// }
-
 pub struct Buffer<'a> {
     context: &'a DeviceContext,
     inner: vk::Buffer,

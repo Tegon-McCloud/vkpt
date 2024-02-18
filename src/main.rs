@@ -2,18 +2,13 @@
 #![feature(int_roundings)]
 #![feature(once_cell_try)]
 
-use std::{path::Path, fs::File, ffi::CStr, os::windows::fs::MetadataExt, io::Read};
-
 use ash::{vk, prelude::VkResult};
 use itertools::Itertools;
 
 use context::DeviceContext;
+use nalgebra::Vector3;
 use resource::{Image, ReadBackBuffer};
-use scene::SceneDescription;
-use shader_binding_table::ShaderBindingTableBuilder;
-
-use crate::pipeline::{Pipeline, Shader, ShaderGroup};
-
+use scene::{Material, SceneDescription};
 
 pub mod util;
 pub mod context;
@@ -21,13 +16,15 @@ pub mod resource;
 pub mod pipeline;
 pub mod shader_binding_table;
 pub mod scene;
+pub mod output;
 
 
 pub fn create_descriptor_set<'a>(
     context: &'a DeviceContext,
+    set_layout: vk::DescriptorSetLayout,
     accel_structure: vk::AccelerationStructureKHR,
     output_view: vk::ImageView,
-) -> VkResult<(vk::DescriptorSet, vk::DescriptorSetLayout, vk::DescriptorPool)> {
+) -> VkResult<(vk::DescriptorSet, vk::DescriptorPool)> {
     unsafe {
 
         let pool_sizes = [
@@ -47,27 +44,6 @@ pub fn create_descriptor_set<'a>(
             .pool_sizes(&pool_sizes);
 
         let pool = context.device().create_descriptor_pool(&pool_info, None)?;
-
-        let layout_bindings = [
-            vk::DescriptorSetLayoutBinding::builder()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR)
-                .build(),
-
-            vk::DescriptorSetLayoutBinding::builder()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR)
-                .build(),
-        ];
-
-        let set_layout_info = vk::DescriptorSetLayoutCreateInfo::builder()
-            .bindings(&layout_bindings);
-
-        let set_layout = context.device().create_descriptor_set_layout(&set_layout_info, None)?;
 
         let alloc_info = vk::DescriptorSetAllocateInfo::builder()
             .descriptor_pool(pool)
@@ -103,82 +79,9 @@ pub fn create_descriptor_set<'a>(
 
         context.device().update_descriptor_sets(&[accel_write, output_image_write], &[]);
 
-        Ok((set, set_layout, pool))
+        Ok((set, pool))
     }
-
-
 }
-
-pub unsafe fn create_shader_module<P: AsRef<Path>>(spv_file: P, context: &DeviceContext) -> VkResult<vk::ShaderModule> {
-
-    let mut file = File::open(spv_file).expect("failed to open SPIR-V file");
-
-    let spv_size = file.metadata().unwrap().file_size() as usize;
-    let u32_buffer_size = spv_size.div_ceil(std::mem::size_of::<u32>());
-
-    let mut buffer = vec![0u32; u32_buffer_size];
-
-    file.read(util::slice_as_mut_u8_slice(buffer.as_mut_slice())).expect("failed to read SPIR-V file");
-
-    let info = vk::ShaderModuleCreateInfo::builder()
-        .code(&buffer);
-
-    context.device().create_shader_module(&info, None)
-}
-
-pub fn general_shader_group_info(index: u32) -> vk::RayTracingShaderGroupCreateInfoKHR {
-    vk::RayTracingShaderGroupCreateInfoKHR::builder()
-        .any_hit_shader(vk::SHADER_UNUSED_KHR)
-        .closest_hit_shader(vk::SHADER_UNUSED_KHR)
-        .intersection_shader(vk::SHADER_UNUSED_KHR)
-        .general_shader(index)
-        .ty(vk::RayTracingShaderGroupTypeKHR::GENERAL)
-        .build()
-}
-
-
-// pub fn render(render_target: vk::Image, mesh: &Mesh<'_>, context: &DeviceContext) -> VkResult<()> {
-//     unsafe {
-
-//         context.execute_commands(|cmd_buffer| {
-
-
-//             context.extensions().ray_tracing_pipeline.cmd_trace_rays(
-//                 cmd_buffer,
-//                 , miss_shader_binding_tables, hit_shader_binding_tables, callable_shader_binding_tables, width, height, depth)
-
-//         })?;
-
-
-//         let cmd_pool_info = vk::CommandPoolCreateInfo::builder()
-//             .queue_family_index(context.queue_family())
-//             .flags(vk::CommandPoolCreateFlags::default());
-//         let cmd_pool = context.device().create_command_pool(&cmd_pool_info, None)?;
-
-//         let cmd_buffer_info = vk::CommandBufferAllocateInfo::builder()
-//             .command_buffer_count(1)
-//             .command_pool(cmd_pool)
-//             .level(vk::CommandBufferLevel::PRIMARY);
-//         let cmd_buffer = context.device().allocate_command_buffers(&cmd_buffer_info)?[0];
-
-//         let fence_info = vk::FenceCreateInfo::builder()
-//             .flags(vk::FenceCreateFlags::default());
-//         let fence = context.device().create_fence(&fence_info, None)?;
-
-//         let begin_info = vk::CommandBufferBeginInfo::builder()
-//             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-
-//         context.device().begin_command_buffer(cmd_buffer, &begin_info)?;
-
-//         context.device().end_command_buffer(cmd_buffer)?;
-
-//         context.device().destroy_fence(fence, None);
-//         context.device().destroy_command_pool(cmd_pool, None);
-//     }
-
-//     Ok(())
-// }
-
 
 struct SampleTarget<'a> {
     #[allow(unused)]
@@ -233,155 +136,48 @@ impl<'a> SampleTarget<'a> {
     }
 }
 
-
-
-// unsafe fn copy_mapped_image_to_vec(image: Image) -> Vec<f32> {
-
-
-// }
-
-
 fn main() {
 
     let context = DeviceContext::new().expect("failed to create device context");
 
-    let mut scene_description = SceneDescription::new();
-    scene_description.load("./resources/bunny.gltf", &context).unwrap();
-    let scene = scene_description.build(&context).unwrap();
-
-    let entry_point_name = unsafe {
-        CStr::from_bytes_with_nul_unchecked(b"main\0")
-    };
-
+    let mut scene_desc = SceneDescription::new();
+    scene_desc.add_material(Material { base_color: Vector3::new(1.0, 1.0, 0.0) });
+    scene_desc.load("./resources/bunny.gltf", &context).unwrap();
+    
     let img_width = 512;
     let img_height = 512;
 
     let sample_target = SampleTarget::new(&context, img_width, img_height).unwrap();
     let sample_view = unsafe { context.device().create_image_view(&sample_target.full_view_info(), None).unwrap() };
     
-    let (descriptor_set, descriptor_set_layout, descriptor_pool) = create_descriptor_set(&context, scene.tlas(), sample_view).unwrap();
+    let descriptor_set_layout_bindings = [
+        vk::DescriptorSetLayoutBinding::builder()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR)
+            .build(),
 
-    let raygen_shader = unsafe {
-        Shader::new(&context, "shader_bin/raytrace.rgen.spv", entry_point_name.to_owned(), vec![descriptor_set_layout]).unwrap()
+        vk::DescriptorSetLayoutBinding::builder()
+            .binding(1)
+            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR)
+            .build(),
+    ];
+
+    let descriptor_set_layout_info = vk::DescriptorSetLayoutCreateInfo::builder()
+        .bindings(&descriptor_set_layout_bindings);
+
+    let descriptor_set_layout = unsafe {
+        context.device().create_descriptor_set_layout(&descriptor_set_layout_info, None).unwrap()
     };
 
-    let miss_shader = unsafe { 
-        Shader::new(&context, "shader_bin/raytrace.rmiss.spv", entry_point_name.to_owned(), vec![]).unwrap()
-    };
+    let scene = scene_desc.build(&context).unwrap();
     
-    let closest_hit_shader = unsafe {
-        Shader::new(&context, "shader_bin/raytrace.rchit.spv", entry_point_name.to_owned(), vec![]).unwrap()
-    };
+    let (sbt, pipeline) = unsafe { scene.make_sbt(descriptor_set_layout).unwrap() };
 
-    let lambertian_shader = unsafe {
-        Shader::new(&context, "shader_bin/lambertian.rcall.spv", entry_point_name.to_owned(), vec![]).unwrap()
-    };
-
-    let pipeline = unsafe {
-        Pipeline::new(&context, &[
-            ShaderGroup::Raygen { raygen: &raygen_shader },
-            ShaderGroup::Miss { miss: &miss_shader },
-            ShaderGroup::TriangleHit { closest_hit: &closest_hit_shader },
-            ShaderGroup::Callable { callable: &lambertian_shader },
-        ]).unwrap()
-    };
-
-    // let raygen_shader_stage_info = vk::PipelineShaderStageCreateInfo::builder()
-    //     .stage(vk::ShaderStageFlags::RAYGEN_KHR)
-    //     .module(raygen_shader.module())
-    //     .name(raygen_shader.entry_point())
-    //     .build();
-
-    // let miss_shader_stage_info = vk::PipelineShaderStageCreateInfo::builder()
-    //     .stage(vk::ShaderStageFlags::MISS_KHR)
-    //     .module(miss_shader.module())
-    //     .name(miss_shader.entry_point())
-    //     .build();
-
-    // let closest_hit_stage_info = vk::PipelineShaderStageCreateInfo::builder()
-    //     .stage(vk::ShaderStageFlags::CLOSEST_HIT_KHR)
-    //     .module(closest_hit_shader.module())
-    //     .name(closest_hit_shader.entry_point())
-    //     .build();
-
-    // let stage_infos = [raygen_shader_stage_info, miss_shader_stage_info, closest_hit_stage_info];
-
-    // let raygen_group_info = general_shader_group_info(0);
-    // let miss_group_info = general_shader_group_info(1);
-    // let hit_group_info = vk::RayTracingShaderGroupCreateInfoKHR::builder()
-    //     .any_hit_shader(vk::SHADER_UNUSED_KHR)
-    //     .closest_hit_shader(2)
-    //     .intersection_shader(vk::SHADER_UNUSED_KHR)
-    //     .general_shader(vk::SHADER_UNUSED_KHR)
-    //     .ty(vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP)
-    //     .build();
-
-    // let group_infos = [raygen_group_info, miss_group_info, hit_group_info];
-
-    // let pipeline = unsafe {
-    //     Pipeline::new(
-    //         &context,
-    //         &[&raygen_shader, &miss_shader, &closest_hit_shader],
-    //         &stage_infos,
-    //         &group_infos,
-    //         Some((&[material_pipeline], library_interface_info.build()))
-    //     ).unwrap()
-    // };
-    
-    let mut sbt_builder = ShaderBindingTableBuilder::new(&context);
-
-    sbt_builder.push_raygen_entry(0, &[]);
-    sbt_builder.push_miss_entry(1, &[]);
-
-    #[repr(C)]
-    struct HitGroupSbtData {
-        material_index: u32,
-        face_address: vk::DeviceAddress,
-        position_address: vk::DeviceAddress,
-        normal_address: vk::DeviceAddress,
-    }
-
-    let hit_group_1_data = unsafe {
-        HitGroupSbtData {
-            material_index: 0,
-            face_address: scene.get_mesh(0).index_address(),
-            position_address: scene.get_mesh(0).position_address(),
-            normal_address: scene.get_mesh(0).normal_address(),
-        }
-    };
-
-    let hit_group_2_data = unsafe {
-        HitGroupSbtData {
-            material_index: 1,
-            face_address: scene.get_mesh(0).index_address(),
-            position_address: scene.get_mesh(0).position_address(),
-            normal_address: scene.get_mesh(0).normal_address(),
-        }
-    };
-
-    sbt_builder.push_hit_group_entry(2, unsafe { util::as_u8_slice(&hit_group_1_data) });
-    sbt_builder.push_hit_group_entry(2, unsafe { util::as_u8_slice(&hit_group_2_data) });
-    
-
-    #[repr(C)]
-    struct LambertianData {
-        color: [f32; 4],
-    }
-
-    let lambertian_red_data  = LambertianData {
-        color: [1.0, 0.0, 0.0, 1.0],
-    };
-
-    let lambertian_blue_data = LambertianData {
-        color: [0.0, 0.0, 1.0, 1.0],
-    };
-
-    sbt_builder.push_callable_entry(3, unsafe { util::as_u8_slice(&lambertian_red_data) });
-    sbt_builder.push_callable_entry(3, unsafe { util::as_u8_slice(&lambertian_blue_data) });
-
-    let sbt = unsafe {
-        sbt_builder.build(&pipeline).unwrap()
-    };
+    let (descriptor_set, descriptor_pool) = create_descriptor_set(&context, descriptor_set_layout, scene.tlas(), sample_view).unwrap();
     
     let readback_buffer = ReadBackBuffer::new(
         &context,

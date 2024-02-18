@@ -38,25 +38,21 @@ impl AlignmentInfo {
     }
 }
 
-
 struct Entry {
     shader_group: u32,
     data_offset: usize,
     data_size: usize,
 }
 
-pub struct ShaderBindingTableBuilder<'ctx> {
-    context: &'ctx DeviceContext,
-    
+pub struct ShaderBindingTableDescription {
     entries: [Vec<Entry>; 4],
     data: Vec<u8>,
 }
 
-impl<'ctx> ShaderBindingTableBuilder<'ctx> {
+impl<'ctx> ShaderBindingTableDescription {
 
-    pub fn new(context: &'ctx DeviceContext) -> Self {
+    pub fn new() -> Self {
         Self {
-            context,
             entries: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             data: Vec::new(),
         }
@@ -87,9 +83,9 @@ impl<'ctx> ShaderBindingTableBuilder<'ctx> {
         self.entries[index].push(Entry { shader_group, data_offset, data_size });
     }
 
-    pub unsafe fn build(&self, pipeline: &Pipeline<'ctx>) -> VkResult<ShaderBindingTable> {
+    pub unsafe fn build(&self, context: &'ctx DeviceContext, pipeline: &Pipeline<'ctx>) -> VkResult<ShaderBindingTable<'ctx>> {
         
-        let align_info = AlignmentInfo::for_context(self.context);
+        let align_info = AlignmentInfo::for_context(context);
 
         let mut strides = [0; 4];
         let mut sizes = [0; 4];
@@ -111,7 +107,7 @@ impl<'ctx> ShaderBindingTableBuilder<'ctx> {
         let buffer_size = curr_offset;
 
         let mut buffer = UploadBuffer::new(
-            self.context, 
+            context, 
             buffer_size,
             vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR
         )?;

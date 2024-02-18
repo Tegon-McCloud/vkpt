@@ -1,115 +1,78 @@
-use std::path::Path;
+use std::{ffi::CStr, ops::Range, path::Path};
 
 use ash::{vk, prelude::VkResult};
-use nalgebra::{Matrix3x4, Matrix4};
+use nalgebra::{Matrix3x4, Matrix4, Vector3};
 
-use crate::{context::DeviceContext, resource::{DeviceBuffer, UploadBuffer}, util};
+use crate::{context::DeviceContext, pipeline::{Pipeline, Shader, ShaderGroup}, resource::{DeviceBuffer, UploadBuffer}, shader_binding_table::{ShaderBindingTable, ShaderBindingTableDescription}, util::{self, as_u8_slice}};
 
 use self::mesh::Mesh;
 
 pub mod mesh;
 
 struct GeometryInstance {
-    mesh_id: usize,
+    mesh_id: MeshId,
+    material_id: MaterialId,
     transform: Matrix3x4<f32>,
-    material_id: usize,
 }
 
-pub struct SceneDescription<'a> {
-    meshes: Vec<Mesh<'a>>,
+pub struct Material {
+    pub base_color: Vector3<f32>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MeshId(usize);
+
+#[derive(Debug, Clone, Copy)]
+pub struct MaterialId(usize);
+
+pub struct SceneDescription<'ctx> {
+    meshes: Vec<Mesh<'ctx>>,
+    materials: Vec<Material>,
+    
     instances: Vec<GeometryInstance>,
 }
 
-impl<'a> SceneDescription<'a> {
+impl<'ctx> SceneDescription<'ctx> {
     pub fn new() -> Self {
         Self {
             meshes: Vec::new(),
             instances: Vec::new(),
+            materials: Vec::new(),
         }
     }
 
-    pub fn add_mesh(&mut self, mesh: Mesh<'a>) -> usize {
+    pub fn add_mesh(&mut self, mesh: Mesh<'ctx>) -> MeshId {
         self.meshes.push(mesh);
-        self.meshes.len() - 1
+        MeshId(self.meshes.len() - 1)
     }
 
-    pub fn add_instance(&mut self, mesh_id: usize, transform: Matrix4<f32>, material_id: usize) {
+    pub fn add_material(&mut self, material: Material) -> MaterialId {
+        self.materials.push(material);
+        MaterialId(self.materials.len() - 1)
+    }
+
+    pub fn add_instance(&mut self, mesh_id: MeshId, material_id: MaterialId, transform: Matrix4<f32>) {
         let transform = Matrix3x4::from_fn(|i, j| transform[(i, j)]);
-
-        self.instances.push(GeometryInstance{ mesh_id, transform, material_id });
+        self.instances.push(GeometryInstance{ mesh_id, material_id, transform });
     }
 
-    pub fn load<P: AsRef<Path>>(&mut self, path: P, context: &'a DeviceContext) -> VkResult<()> {
-    
-        let (document, buffers, _images) = gltf::import(path).expect("failed to import scene");
-    
-        let mut mesh_ids = Vec::new();
-    
-        for mesh in document.meshes() {
-            for primitive in mesh.primitives() {
-    
-                let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
-                let face_iter = reader.read_indices()
-                    .unwrap()
-                    .into_u32()
-                    .array_chunks();
-                
-                let position_iter = reader.read_positions().unwrap();
-                let normal_iter = reader.read_normals().unwrap();
-                unsafe {
-                    let mesh_id = self.add_mesh(Mesh::new(context, face_iter, position_iter, normal_iter)?);
-                    mesh_ids.push(mesh_id);
-                }
-            }
-        }
-    
-        if let Some(scene) = document.default_scene() {
-            for node in scene.nodes() {
-                self.add_node(&mesh_ids, node, Matrix4::identity());
-            }
-        }
-
-        Ok(())
-    }
-
-    fn add_node(
-        &mut self,
-        mesh_ids: &[usize],
-        node: gltf::Node<'_>,
-        mut transform: Matrix4<f32>
-    ) {
-        let local_transform = node.transform().matrix(); 
-        let local_transform = Matrix4::from_fn(|i, j| local_transform[j][i]);
-    
-        transform = local_transform * transform;
-        
-        if let Some(gltf_mesh) = node.mesh() {
-    
-            let mesh_id = mesh_ids[gltf_mesh.index()];
-            self.add_instance(mesh_id, transform, 0)
-        }
-    
-        for child in node.children() {
-            self.add_node(mesh_ids, child, transform);
-        }
-    }    
-
-    pub fn build(self, context: &'a DeviceContext) -> VkResult<Scene<'a>> {
-        unsafe {
-
+    pub fn build(self, context: &'ctx DeviceContext) -> VkResult<Scene<'ctx>> {
+        unsafe {    
             let (tlas_buffer, tlas) = self.build_tlas(context)?;
-            
 
             Ok(Scene {
                 context,
                 meshes: self.meshes,
+                materials: self.materials,
+                instances: self.instances,
+                
                 tlas_buffer,
                 tlas,
             })
         }
     }
 
-    unsafe fn build_tlas(&self, context: &'a DeviceContext) -> VkResult<(DeviceBuffer<'a>, vk::AccelerationStructureKHR)> {
+    unsafe fn build_tlas(&self, context: &'ctx DeviceContext) -> VkResult<(DeviceBuffer<'ctx>, vk::AccelerationStructureKHR)> {
         let blas_instance_iter = self.instances.iter()
             .enumerate()
             .map(|(i, instance)|
@@ -121,7 +84,7 @@ impl<'a> SceneDescription<'a> {
                         vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8
                     ),
                     acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
-                        device_handle: self.meshes[instance.mesh_id].get_accel_structure_device_address()
+                        device_handle: self.meshes[instance.mesh_id.0].get_accel_structure_device_address()
                     },
                 }
             );
@@ -217,23 +180,199 @@ impl<'a> SceneDescription<'a> {
 
 }
 
-pub struct Scene<'a> {
-    context: &'a DeviceContext,
-    meshes: Vec<Mesh<'a>>,
+impl<'ctx> SceneDescription<'ctx> {
+    pub fn load<P: AsRef<Path>>(&mut self, path: P, context: &'ctx DeviceContext) -> VkResult<()> {
+        let (document, buffers, _images) = gltf::import(path).expect("failed to import scene");
     
+        let mut primitive_ids = Vec::new();
+        let mut mesh_ranges = Vec::new();
+        
+        for mesh in document.meshes() {
+
+            let mesh_begin = primitive_ids.len();
+
+            for primitive in mesh.primitives() {
+    
+                let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
+                let face_iter = reader.read_indices()
+                    .unwrap()
+                    .into_u32()
+                    .array_chunks();
+                
+                let position_iter = reader.read_positions().unwrap();
+                let normal_iter = reader.read_normals().unwrap();
+
+                unsafe {
+                    primitive_ids.push(self.add_mesh(Mesh::new(context, face_iter, position_iter, normal_iter)?));
+                }
+            }
+
+            let mesh_end = primitive_ids.len();
+            mesh_ranges.push(mesh_begin..mesh_end);
+        }
+
+
+        let mut material_ids = Vec::new();
+
+        for material in document.materials() {
+            let base_color_factor = material.pbr_metallic_roughness().base_color_factor();
+
+            material_ids.push(self.add_material(Material {
+                base_color: Vector3::new(base_color_factor[0], base_color_factor[1], base_color_factor[2]),
+            }));
+        }
+
+        if let Some(scene) = document.default_scene() {
+            for node in scene.nodes() {
+                self.add_node(&mesh_ranges, &primitive_ids, &material_ids, node, Matrix4::identity());
+            }
+        }
+
+        Ok(())
+    }
+
+    fn add_node(
+        &mut self,
+        mesh_ranges: &[Range<usize>],
+        primitive_ids: &[MeshId],
+        material_ids: &[MaterialId],
+        node: gltf::Node<'_>,
+        mut transform: Matrix4<f32>
+    ) {
+        let local_transform = node.transform().matrix(); 
+        let local_transform = Matrix4::from_fn(|i, j| local_transform[j][i]);
+    
+        transform = local_transform * transform;
+
+        if let Some(gltf_mesh) = node.mesh() {
+            
+            let mesh_range = mesh_ranges[gltf_mesh.index()].clone();
+            
+
+            for (gltf_primitive, &primitive_id) in gltf_mesh.primitives().zip( &primitive_ids[mesh_range]) {
+                
+                let material_id = material_ids[gltf_primitive.material().index().unwrap()];
+                self.add_instance(primitive_id, material_id, transform)
+            }
+        }
+        
+        for child in node.children() {
+            self.add_node(mesh_ranges, primitive_ids, material_ids, child, transform);
+        }
+    }
+}
+
+#[repr(C)]
+struct HitGroupSbtData {
+    material_index: u32,
+    face_address: vk::DeviceAddress,
+    position_address: vk::DeviceAddress,
+    normal_address: vk::DeviceAddress,
+}
+
+#[repr(C)]
+struct LambertianData {
+    color: [f32; 4],
+}
+
+pub struct Scene<'ctx> {
+    context: &'ctx DeviceContext,
+    
+    meshes: Vec<Mesh<'ctx>>,
+    materials: Vec<Material>,
+
+    instances: Vec<GeometryInstance>,
+
     #[allow(unused)]
-    tlas_buffer: DeviceBuffer<'a>,
+    tlas_buffer: DeviceBuffer<'ctx>,
     tlas: vk::AccelerationStructureKHR,
 }
 
-impl<'a> Scene<'a> {
+impl<'ctx> Scene<'ctx> {
 
-    pub fn get_mesh(&self, mesh_id: usize) -> &Mesh<'a> {
+    pub fn get_mesh(&self, mesh_id: usize) -> &Mesh<'ctx> {
         &self.meshes[mesh_id]
     }
 
     pub fn tlas(&self) -> vk::AccelerationStructureKHR {
         self.tlas
+    }
+
+    pub unsafe fn make_sbt(&self, raygen_desc_set_layout: vk::DescriptorSetLayout) -> VkResult<(ShaderBindingTable<'ctx>, Pipeline<'ctx>)> {
+        let mut shader_groups = Vec::new();
+        let mut sbt_desc = ShaderBindingTableDescription::new();
+
+        let entry_point_name = CStr::from_bytes_with_nul_unchecked(b"main\0").to_owned();
+
+        let raygen_shader = Shader::new(
+            &self.context,
+            "shader_bin/raytrace.rgen.spv",
+            entry_point_name.clone(),
+            vec![raygen_desc_set_layout],
+        )?;
+        
+        let miss_shader = Shader::new(
+            &self.context,
+            "shader_bin/raytrace.rmiss.spv",
+            entry_point_name.clone(),
+            vec![],
+        )?;
+
+        let closest_hit_shader = Shader::new(
+            &self.context,
+            "shader_bin/raytrace.rchit.spv",
+            entry_point_name.clone(),
+            vec![],
+        )?;
+
+        let lambertian_shader = Shader::new(
+            &self.context,
+            "shader_bin/lambertian.rcall.spv",
+            entry_point_name.to_owned(),
+            vec![],
+        )?;
+
+        shader_groups.push(ShaderGroup::Raygen { raygen: &raygen_shader });
+        let raygen_group_index = shader_groups.len() - 1;
+
+        shader_groups.push(ShaderGroup::Miss { miss: &miss_shader });
+        let miss_group_index = shader_groups.len() - 1;
+
+        shader_groups.push(ShaderGroup::TriangleHit { closest_hit: &closest_hit_shader });
+        let hit_group_index = shader_groups.len() - 1;
+
+        shader_groups.push(ShaderGroup::Callable { callable: &lambertian_shader });
+        let lambertian_group_index = shader_groups.len() - 1;
+        
+        let pipeline = Pipeline::new(self.context, &shader_groups)?;
+
+        sbt_desc.push_raygen_entry(raygen_group_index as u32, &[]);
+        sbt_desc.push_miss_entry(miss_group_index as u32, &[]);
+        
+        for instance in &self.instances {
+            let mesh = &self.meshes[instance.mesh_id.0];
+
+            let sbt_data = HitGroupSbtData {
+                material_index: instance.material_id.0 as u32,
+                face_address: mesh.index_address(),
+                position_address: mesh.position_address(),
+                normal_address: mesh.normal_address(),
+            };
+            
+            sbt_desc.push_hit_group_entry(hit_group_index as u32, as_u8_slice(&sbt_data));
+        }
+
+        for material in &self.materials {
+            let sbt_data = LambertianData {
+                color: [material.base_color.x, material.base_color.y, material.base_color.z, 1.0],
+            };
+
+            sbt_desc.push_callable_entry(lambertian_group_index as u32, util::as_u8_slice(&sbt_data));
+        }
+
+        let sbt = sbt_desc.build(self.context, &pipeline)?;
+
+        Ok((sbt, pipeline))
     }
 
 }
@@ -245,4 +384,3 @@ impl<'a> Drop for Scene<'a> {
         }    
     }
 }
-
