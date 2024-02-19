@@ -6,9 +6,9 @@ use ash::{vk, prelude::VkResult};
 use itertools::Itertools;
 
 use context::DeviceContext;
-use nalgebra::Vector3;
 use resource::{Image, ReadBackBuffer};
-use scene::{Material, SceneDescription};
+
+use crate::scene::Scene;
 
 pub mod util;
 pub mod context;
@@ -136,56 +136,65 @@ impl<'a> SampleTarget<'a> {
     }
 }
 
+
+// fn create_post_processing_shader<'ctx>(context: &'ctx DeviceContext) -> Shader<'ctx> {
+
+    
+
+// }
+
 fn main() {
 
-    let context = DeviceContext::new().expect("failed to create device context");
-
-    let mut scene_desc = SceneDescription::new();
-    scene_desc.add_material(Material { base_color: Vector3::new(1.0, 1.0, 0.0) });
-    scene_desc.load("./resources/bunny.gltf", &context).unwrap();
-    
-    let img_width = 512;
-    let img_height = 512;
-
-    let sample_target = SampleTarget::new(&context, img_width, img_height).unwrap();
-    let sample_view = unsafe { context.device().create_image_view(&sample_target.full_view_info(), None).unwrap() };
-    
-    let descriptor_set_layout_bindings = [
-        vk::DescriptorSetLayoutBinding::builder()
-            .binding(0)
-            .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR)
-            .build(),
-
-        vk::DescriptorSetLayoutBinding::builder()
-            .binding(1)
-            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR)
-            .build(),
-    ];
-
-    let descriptor_set_layout_info = vk::DescriptorSetLayoutCreateInfo::builder()
-        .bindings(&descriptor_set_layout_bindings);
-
-    let descriptor_set_layout = unsafe {
-        context.device().create_descriptor_set_layout(&descriptor_set_layout_info, None).unwrap()
-    };
-
-    let scene = scene_desc.build(&context).unwrap();
-    
-    let (sbt, pipeline) = unsafe { scene.make_sbt(descriptor_set_layout).unwrap() };
-
-    let (descriptor_set, descriptor_pool) = create_descriptor_set(&context, descriptor_set_layout, scene.tlas(), sample_view).unwrap();
-    
-    let readback_buffer = ReadBackBuffer::new(
-        &context,
-        std::mem::size_of::<f32>() as u64 * 4 * img_width as u64 * img_height as u64,
-        vk::BufferUsageFlags::TRANSFER_DST
-    ).unwrap();
-
     unsafe {
+        let context = DeviceContext::new().expect("failed to create device context");
+
+        let mut scene = Scene::new(&context);
+        scene.load("./resources/bunny.gltf", &context).unwrap();
+        
+        let img_width = 512;
+        let img_height = 512;
+
+
+    
+        let sample_target = SampleTarget::new(&context, img_width, img_height).unwrap();
+        let sample_view = context.device().create_image_view(&sample_target.full_view_info(), None).unwrap();
+
+        let descriptor_set_layout_bindings = [
+            vk::DescriptorSetLayoutBinding::builder()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR)
+                .build(),
+    
+            vk::DescriptorSetLayoutBinding::builder()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR)
+                .build(),
+        ];
+    
+        let descriptor_set_layout_info = vk::DescriptorSetLayoutCreateInfo::builder()
+            .bindings(&descriptor_set_layout_bindings);
+        
+        let descriptor_set_layout = context.device().create_descriptor_set_layout(&descriptor_set_layout_info, None).unwrap();
+    
+        let compiled_scene = scene.compile(descriptor_set_layout).unwrap();
+
+        
+        let pipeline = compiled_scene.pipeline();
+        let sbt = compiled_scene.sbt();
+
+        let (descriptor_set, descriptor_pool) = create_descriptor_set(&context, descriptor_set_layout, compiled_scene.tlas(), sample_view).unwrap();
+        
+        
+        let readback_buffer = ReadBackBuffer::new(
+            &context,
+            std::mem::size_of::<f32>() as u64 * 4 * img_width as u64 * img_height as u64,
+            vk::BufferUsageFlags::TRANSFER_DST
+        ).unwrap();
+
         context.execute_commands(|cmd_buffer| {
 
             let full_subresource_range = vk::ImageSubresourceRange {
@@ -312,13 +321,11 @@ fn main() {
         let img = image::RgbaImage::from_vec(img_width, img_height, img_raw_u8).unwrap();
 
         img.save("output.png").unwrap(); 
-    }
-    
-    unsafe {
+
         //context.device().free_descriptor_sets(descriptor_pool, &[descriptor_set]).unwrap();
         context.device().destroy_descriptor_set_layout(descriptor_set_layout, None);
         context.device().destroy_descriptor_pool(descriptor_pool, None);
 
         context.device().destroy_image_view(sample_view, None);
-    };
+    }
 }
