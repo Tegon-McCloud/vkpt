@@ -5,23 +5,34 @@ use itertools::Itertools;
 
 use crate::{context::DeviceContext, util};
 
-// #[derive(Debug, Hash)]
-// pub enum ShaderModuleSource {
-//     File(PathBuf),
-//     Code(Vec<u32>),
-// }
+pub trait ShaderData {
+    fn as_u8_slice<'a>(&'a self) -> &'a [u8];
+}
 
-// pub enum ShaderModuleSourceRef<'a, P> {
-//     File(&'a P),
-//     Code(&'a [u32]),
-// }
+#[derive(Debug, Clone, Default)]
+pub struct ShaderResourceLayout {
+    descriptor_sets: Vec<vk::DescriptorSetLayout>,
+    push_constants_size: usize,
+}
 
+impl ShaderResourceLayout {
+    pub fn new(
+        descriptor_sets: Vec<vk::DescriptorSetLayout>,
+        push_constants_size: usize,
+    ) -> Self {
+    
+        Self {
+            descriptor_sets,
+            push_constants_size,
+        }
+    }
+}
 
 pub struct Shader<'a> {
     context: &'a DeviceContext,
     module: vk::ShaderModule,
     entry_point: CString,
-    resource_layout: Vec<vk::DescriptorSetLayout>,
+    resource_layout: ShaderResourceLayout,
 }
 
 impl<'a> Shader<'a> {
@@ -29,7 +40,7 @@ impl<'a> Shader<'a> {
         context: &'a DeviceContext,
         spv_path: P,
         entry_point: CString,
-        resource_layout: Vec<vk::DescriptorSetLayout>,
+        resource_layout: ShaderResourceLayout,
     ) -> VkResult<Self> {
         let spv_code = Self::read_spv(spv_path.as_ref());
         let info = vk::ShaderModuleCreateInfo::builder()
@@ -61,7 +72,7 @@ impl<'a> Shader<'a> {
         spv_code
     }
 
-    pub fn module(&self) -> vk::ShaderModule {
+    pub unsafe fn module(&self) -> vk::ShaderModule {
         self.module
     }
 
@@ -269,8 +280,6 @@ pub struct Pipeline<'ctx> {
 
 impl<'ctx> Pipeline<'ctx> {
 
-
-    
     pub unsafe fn new(
         context: &'ctx DeviceContext,
         shader_groups: &[ShaderGroup<'ctx, '_>]
@@ -373,12 +382,32 @@ impl<'ctx> Pipeline<'ctx> {
         }
 
         let set_layouts = stages.iter()
-            .map(|stage| stage.resource_layout.iter().copied())
+            .map(|stage| stage.resource_layout.descriptor_sets.iter().copied())
             .flatten()
             .collect_vec();
+        
+        let mut push_constant_offset = 0;
+        let mut push_constant_ranges = Vec::new();
+
+        for (stage, info) in stages.iter().zip(&stage_infos) {
+
+            let push_constants_size = stage.resource_layout.push_constants_size;
+
+            if push_constants_size != 0 {
+
+                push_constant_ranges.push(vk::PushConstantRange {
+                    stage_flags: info.stage,
+                    offset: push_constant_offset as u32,
+                    size: push_constants_size as u32,
+                });
+
+                push_constant_offset += push_constants_size;
+            }
+        }
 
         let layout_info = vk::PipelineLayoutCreateInfo::builder()
-            .set_layouts(&set_layouts);
+            .set_layouts(&set_layouts)
+            .push_constant_ranges(&push_constant_ranges);
 
         let layout = context.create_pipeline_layout(&layout_info)?;
         

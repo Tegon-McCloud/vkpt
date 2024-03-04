@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use ash::{vk, prelude::VkResult};
 
 use crate::{context::DeviceContext, util};
@@ -272,10 +274,11 @@ impl<'a> ReadBackBuffer<'a> {
 //     marker: std::marker::PhantomData<T>,
 // }
 
-pub struct Image<'a> {
-    pub context: &'a DeviceContext,
-    pub inner: vk::Image,
-    pub allocation: gpu_allocator::vulkan::Allocation,
+pub struct Image<'ctx> {
+    context: &'ctx DeviceContext,
+    resolution: (u32, u32),
+    inner: vk::Image,
+    allocation: gpu_allocator::vulkan::Allocation,
 }
 
 impl<'a> Image<'a> {
@@ -301,12 +304,24 @@ impl<'a> Image<'a> {
             context.device().bind_image_memory(inner, allocation.memory(), allocation.offset()).unwrap();
         }
 
+        let resolution = (create_info.extent.width, create_info.extent.height);
+
         Ok(Self {
             context,
+            resolution,
             inner,
             allocation
         })
     }
+
+    pub fn resolution(&self) -> (u32, u32) {
+        self.resolution
+    }
+
+    pub unsafe fn inner(&self) -> vk::Image {
+        self.inner
+    }
+
 }
 
 impl Drop for Image<'_> {
@@ -323,3 +338,52 @@ impl Drop for Image<'_> {
         }
     }
 }
+
+
+pub struct ImageView<'ctx> {
+    context: &'ctx DeviceContext,
+    inner: vk::ImageView,
+}
+
+impl<'ctx> ImageView<'ctx> {
+    pub fn new(image: &Image<'ctx>, format: vk::Format, mip_levels: Range<u32>, array_layers: Range<u32>) -> VkResult<Self> {
+        let info = vk::ImageViewCreateInfo::builder()
+        .image(unsafe { image.inner() })
+        .view_type(vk::ImageViewType::TYPE_2D)
+        .format(format)
+        .components(vk::ComponentMapping {
+            r: vk::ComponentSwizzle::R,
+            g: vk::ComponentSwizzle::G,
+            b: vk::ComponentSwizzle::B,
+            a: vk::ComponentSwizzle::A,
+        })
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: mip_levels.start,
+            level_count: mip_levels.end - mip_levels.start,
+            base_array_layer: array_layers.start,
+            layer_count: array_layers.end - array_layers.start,
+        });
+
+        let inner = unsafe { image.context.device().create_image_view(&info, None)? };
+
+        Ok(Self {
+            context: image.context,
+            inner,
+        })
+    }
+
+    pub unsafe fn inner(&self) -> vk::ImageView {
+        self.inner
+    }
+
+}
+
+impl<'ctx> Drop for ImageView<'ctx> {
+    fn drop(&mut self) {
+        unsafe {
+            self.context.device().destroy_image_view(self.inner, None);
+        }
+    }
+}
+

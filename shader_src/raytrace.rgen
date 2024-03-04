@@ -2,30 +2,44 @@
 #extension GL_EXT_ray_tracing : require
 #extension GL_GOOGLE_include_directive : enable
 
+#include "../shader_include/definitions.glsl"
+#include "../shader_include/random.glsl"
+
 layout(set = 0, binding = 0) uniform accelerationStructureEXT topLevelAS;
 layout(set = 0, binding = 1, rgba32f) uniform image2D image;
 
-layout(location = 0) rayPayloadEXT vec3 color;
+struct Camera {
+    mat3x3 matrix;
+    vec3 position;
+};
 
-void main()  {
+layout(push_constant) uniform Params {
+    Camera camera;
+    uint sampleIndex;
+} params;
 
-    // camera params
-    vec3 forward = vec3(0.0, 0.0, -1.0);
-    vec3 horizontal = vec3(1.0, 0.0, 0.0);
-    vec3 vertical = vec3(0.0, 1.0, 0.0);
+layout(location = 0) rayPayloadEXT pathInfo payload;
+
+void main() {
 
     ivec2 size = ivec2(gl_LaunchSizeEXT.xy);
     ivec2 position = ivec2(gl_LaunchIDEXT.xy);
 
-    vec2 uv = (vec2(position) + 0.5) / vec2(size);
+    uint launchIndex = position.y * size.x + position.x;
+    tea(params.sampleIndex, launchIndex);
+    
+    vec2 uv = (vec2(position) + vec2(rnd(), rnd())) / vec2(size);
 
-    vec3 origin = vec3(0.0, 0.5, 1.5);
-    vec3 direction = normalize((2.0 * uv.x - 1.0) * horizontal + (1.0 - 2.0 * uv.y) * vertical + forward);
+    vec3 origin = params.camera.position;
+    vec3 direction = normalize(params.camera.matrix * vec3(uv, 1.0));
 
     uint rayFlags = gl_RayFlagsOpaqueEXT;
     uint cullMask = 0xff;
-    float tMin = 1e-3;
-    float tMax = 1e16;
+    float tMin = 1e-8;
+    float tMax = 1e10;
+
+    payload.weight = vec3(1.0);
+    payload.radiance = vec3(0.0);
 
     traceRayEXT(topLevelAS,   // acceleration structure
               rayFlags,       // rayFlags
@@ -33,13 +47,17 @@ void main()  {
               0,              // sbtRecordOffset
               0,              // sbtRecordStride
               0,              // missIndex
-              origin.xyz,     // ray origin
+              origin,     // ray origin
               tMin,           // ray min range
-              direction.xyz,  // ray direction
+              direction,  // ray direction
               tMax,           // ray max range
               0               // payload (location = 0)
     );
 
+    float sampleWeight = 1.0 / float(params.sampleIndex + 1);
 
-    imageStore(image, position, vec4(color, 1.0));
+    vec3 prev = imageLoad(image, position).xyz;
+    vec3 new = mix(prev, payload.radiance, sampleWeight);
+
+    imageStore(image, position, vec4(new, 1.0));
 }

@@ -1,19 +1,19 @@
 use ash::{prelude::VkResult, vk};
 
-use crate::{context::DeviceContext, resource::Image};
+use crate::{context::DeviceContext, resource::{Image, ImageView}};
 
 pub trait Output<'ctx> {
-    fn image_view(&self) -> vk::ImageView;
+    unsafe fn image_view(&self) -> vk::ImageView;
 }
 
 pub struct OutputImage<'ctx> {
     image: Image<'ctx>,
-    view: vk::ImageView,
+    view: ImageView<'ctx>,
 }
 
 impl<'ctx> Output<'ctx> for OutputImage<'ctx> {
-    fn image_view(&self) -> vk::ImageView {
-        self.view
+    unsafe fn image_view(&self) -> vk::ImageView {
+        self.view.inner()
     }
 }
 
@@ -32,26 +32,8 @@ impl<'ctx> OutputImage<'ctx> {
 
         let image = Image::new(context, &image_info, gpu_allocator::MemoryLocation::GpuOnly)?;
 
-        let view_info = vk::ImageViewCreateInfo::builder()
-            .image(image.inner)
-            .view_type(vk::ImageViewType::TYPE_2D)
-            .format(vk::Format::R8G8B8A8_UINT)
-            .components(vk::ComponentMapping {
-                r: vk::ComponentSwizzle::R,
-                g: vk::ComponentSwizzle::G,
-                b: vk::ComponentSwizzle::B,
-                a: vk::ComponentSwizzle::A,
-            })
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            });
-
-        let view = context.device().create_image_view(&view_info, None)?;
-        
+        let view = ImageView::new(&image, vk::Format::R8G8B8A8_UINT, 0..1, 0..1)?;
+            
         Ok(Self {
             image,
             view,

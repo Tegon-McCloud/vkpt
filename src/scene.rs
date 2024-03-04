@@ -3,14 +3,13 @@ use std::{ffi::CStr, ops::Range, path::Path};
 use ash::{vk, prelude::VkResult};
 use nalgebra::{Matrix3x4, Matrix4, Vector3};
 
-use crate::{context::DeviceContext, pipeline::{Pipeline, Shader, ShaderGroup}, resource::{DeviceBuffer, UploadBuffer}, shader_binding_table::{ShaderBindingTable, ShaderBindingTableDescription}, util::{self, as_u8_slice}};
+use crate::{context::DeviceContext, pipeline::{Pipeline, Shader, ShaderData, ShaderGroup, ShaderResourceLayout}, resource::{DeviceBuffer, UploadBuffer}, shader_binding_table::{ShaderBindingTable, ShaderBindingTableDescription}, util::{self, as_u8_slice}};
 
-use self::{material::Material, mesh::Mesh};
+use self::{camera::Camera, material::Material, mesh::Mesh};
 
 pub mod mesh;
 pub mod material;
-
-
+pub mod camera;
 
 struct GeometryInstance {
     mesh: MeshHandle,
@@ -43,11 +42,10 @@ struct LambertianData {
 
 pub struct Scene<'ctx> {
     context: &'ctx DeviceContext,
-    
     meshes: Vec<Mesh<'ctx>>,
     materials: Vec<Material>,
-
     instances: Vec<GeometryInstance>,
+    camera: Camera,
 }
 
 impl<'ctx> Scene<'ctx> {
@@ -58,6 +56,7 @@ impl<'ctx> Scene<'ctx> {
             meshes: Vec::new(),
             materials: Vec::new(),
             instances: Vec::new(),
+            camera: Camera::default(),
         }
     }
 
@@ -74,6 +73,10 @@ impl<'ctx> Scene<'ctx> {
     pub fn add_instance(&mut self, mesh: MeshHandle, material: MaterialHandle, transform: Matrix4<f32>) {
         let transform = Matrix3x4::from_fn(|i, j| transform[(i, j)]);
         self.instances.push(GeometryInstance{ mesh, material, transform });
+    }
+
+    pub fn set_camera(&mut self, camera: Camera) {
+        self.camera = camera;
     }
 
     pub fn get_mesh(&self, mesh_id: usize) -> &Mesh<'ctx> {
@@ -214,28 +217,28 @@ impl<'ctx> Scene<'ctx> {
             &self.context,
             "shader_bin/raytrace.rgen.spv",
             entry_point_name.clone(),
-            vec![raygen_desc_set_layout],
+            ShaderResourceLayout::new(vec![raygen_desc_set_layout], 68),
         )?;
         
         let miss_shader = Shader::new(
             &self.context,
             "shader_bin/raytrace.rmiss.spv",
             entry_point_name.clone(),
-            vec![],
+            ShaderResourceLayout::default(),
         )?;
 
         let closest_hit_shader = Shader::new(
             &self.context,
             "shader_bin/raytrace.rchit.spv",
             entry_point_name.clone(),
-            vec![],
+            ShaderResourceLayout::default(),
         )?;
 
         let lambertian_shader = Shader::new(
             &self.context,
-            "shader_bin/lambertian.rcall.spv",
+            "shader_bin/lambertian_evaluate.rcall.spv",
             entry_point_name.to_owned(),
-            vec![],
+            ShaderResourceLayout::default(),
         )?;
 
         shader_groups.push(ShaderGroup::Raygen { raygen: &raygen_shader });
@@ -305,8 +308,16 @@ impl<'ctx> CompiledScene<'ctx, '_> {
         &self.sbt
     } 
 
-    pub fn pipeline(&self) -> &Pipeline<'ctx>  {
+    pub fn pipeline(&self) -> &Pipeline<'ctx> {
         &self.pipeline
+    }
+
+    pub fn camera_data(&self) -> impl ShaderData {
+        self.scene.camera.serialize()
+    }
+
+    pub unsafe fn bind(&self, cmd_buffer: vk::CommandBuffer) {
+
     }
 }
 
@@ -317,8 +328,6 @@ impl<'ctx, 'a> Drop for CompiledScene<'ctx, 'a> {
         }    
     }
 }
-
-
 
 impl<'ctx> Scene<'ctx> {
     pub fn load<P: AsRef<Path>>(&mut self, path: P, context: &'ctx DeviceContext) -> VkResult<()> {
@@ -351,20 +360,31 @@ impl<'ctx> Scene<'ctx> {
             mesh_ranges.push(mesh_begin..mesh_end);
         }
 
+        
+        let default_material = self.add_material(Material {
+            base_color: Vector3::new(1.0, 1.0, 1.0),
+        });
 
-        let mut material_ids = Vec::new();
+        let mut material_handles = Vec::new();
 
         for material in document.materials() {
             let base_color_factor = material.pbr_metallic_roughness().base_color_factor();
 
-            material_ids.push(self.add_material(Material {
+            material_handles.push(self.add_material(Material {
                 base_color: Vector3::new(base_color_factor[0], base_color_factor[1], base_color_factor[2]),
             }));
         }
 
         if let Some(scene) = document.default_scene() {
             for node in scene.nodes() {
-                self.add_node(&mesh_ranges, &primitive_ids, &material_ids, node, Matrix4::identity());
+                self.add_node(
+                    &mesh_ranges,
+                    &primitive_ids,
+                    &material_handles,
+                    default_material,
+                    node,
+                    Matrix4::identity()
+                );
             }
         }
 
@@ -376,6 +396,7 @@ impl<'ctx> Scene<'ctx> {
         mesh_ranges: &[Range<usize>],
         primitive_handles: &[MeshHandle],
         material_handles: &[MaterialHandle],
+        default_material: MaterialHandle,
         node: gltf::Node<'_>,
         mut transform: Matrix4<f32>
     ) {
@@ -390,13 +411,25 @@ impl<'ctx> Scene<'ctx> {
 
             for (gltf_primitive, &primitive_handle) in gltf_mesh.primitives().zip(&primitive_handles[mesh_range]) {
                 
-                let material_id = material_handles[gltf_primitive.material().index().unwrap()];
-                self.add_instance(primitive_handle, material_id, transform)
+                let material_handle = gltf_primitive
+                    .material()
+                    .index()
+                    .map(|index| material_handles[index])
+                    .unwrap_or(default_material);
+
+                self.add_instance(primitive_handle, material_handle, transform)
             }
         }
         
         for child in node.children() {
-            self.add_node(mesh_ranges, primitive_handles, material_handles, child, transform);
+            self.add_node(
+                mesh_ranges,
+                primitive_handles,
+                material_handles,
+                default_material,
+                child,
+                transform
+            );
         }
     }
 }

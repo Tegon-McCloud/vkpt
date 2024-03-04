@@ -5,24 +5,32 @@ use anyhow::Result;
 
 extern crate shaderc;
 
-fn get_shader_kind<P: AsRef<Path>>(path: P) -> shaderc::ShaderKind {
+enum ShaderKind {
+    Header,
+    Source(shaderc::ShaderKind)
+}
+
+fn get_shader_kind<P: AsRef<Path>>(path: P) -> ShaderKind {
 
     let extension = path.as_ref()
         .extension()
         .and_then(|os_str| os_str.to_str());
 
-
-    match extension {
-        Some("vert") => shaderc::ShaderKind::Vertex,
-        Some("frag") => shaderc::ShaderKind::Fragment,
-        Some("comp") => shaderc::ShaderKind::Compute,
-        Some("rgen") => shaderc::ShaderKind::RayGeneration,
-        Some("rint") => shaderc::ShaderKind::Intersection,
-        Some("rahit") => shaderc::ShaderKind::AnyHit,
-        Some("rchit") => shaderc::ShaderKind::ClosestHit,
-        Some("rmiss") => shaderc::ShaderKind::Miss,
-        Some("rcall") => shaderc::ShaderKind::Callable,
-        _ => shaderc::ShaderKind::InferFromSource,
+    if extension == Some("glsl") {
+        ShaderKind::Header
+    } else {
+        ShaderKind::Source(match extension {
+            Some("vert") => shaderc::ShaderKind::Vertex,
+            Some("frag") => shaderc::ShaderKind::Fragment,
+            Some("comp") => shaderc::ShaderKind::Compute,
+            Some("rgen") => shaderc::ShaderKind::RayGeneration,
+            Some("rint") => shaderc::ShaderKind::Intersection,
+            Some("rahit") => shaderc::ShaderKind::AnyHit,
+            Some("rchit") => shaderc::ShaderKind::ClosestHit,
+            Some("rmiss") => shaderc::ShaderKind::Miss,
+            Some("rcall") => shaderc::ShaderKind::Callable,
+            _ => shaderc::ShaderKind::InferFromSource,
+        })
     }
 }
 
@@ -62,22 +70,28 @@ fn main() -> Result<()> {
 
         let in_path = entry.path();
 
-        let shader_kind = get_shader_kind(&in_path);
-        let shader_name = in_path.file_name().and_then(|os_str| os_str.to_str()).unwrap_or_default();
-        let shader_source = std::fs::read_to_string(&in_path)?;
 
-        let shader_binary = shader_compiler.compile_into_spirv(
-            &shader_source,
-            shader_kind,
-            shader_name,
-            "main",
-            Some(&compile_options)
-        )?;
-        
-        std::fs::write(
-            out_dir.join(String::from_iter([shader_name, ".spv"])),
-            shader_binary.as_binary_u8()
-        )?;
+        let kind = get_shader_kind(&in_path);
+
+        if let ShaderKind::Source(shaderc_kind) = kind {
+            let name = in_path.file_name().and_then(|os_str| os_str.to_str()).unwrap_or_default();
+            let source = std::fs::read_to_string(&in_path)?;
+            
+            let binary = shader_compiler.compile_into_spirv(
+                &source,
+                shaderc_kind,
+                name,
+                "main",
+                Some(&compile_options)
+            )?;
+
+            std::fs::write(
+                out_dir.join(String::from_iter([name, ".spv"])),
+                binary.as_binary_u8()
+            )?;
+        }
+
+
     }
 
     Ok(())
