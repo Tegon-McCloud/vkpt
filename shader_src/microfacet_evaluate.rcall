@@ -9,11 +9,14 @@
 #include "../shader_include/util.glsl"
 
 layout(shaderRecordEXT, std430) buffer sbtData {
-    vec4 color;
+    float ior;
+    float roughness;
 };
 
 layout(location = 0) callableDataInEXT brdfEvaluation evaluation;
 
 void main() {
-    evaluation.weight = (1.0 / pi) * color.xyz;
+    float cos_theta_i = evaluation.wi.z;
+    
+    evaluation.weight = vec3((1.0 / pi) * max(cos_theta_i, 0.0));
 }

@@ -36,8 +36,9 @@ struct HitGroupSbtData {
 }
 
 #[repr(C)]
-struct LambertianData {
-    color: [f32; 4],
+struct MicrofacetData {
+    ior: f32,
+    roughness: f32,
 }
 
 pub struct Scene<'ctx> {
@@ -234,9 +235,9 @@ impl<'ctx> Scene<'ctx> {
             ShaderResourceLayout::default(),
         )?;
 
-        let lambertian_shader = Shader::new(
+        let microfacet_shader = Shader::new(
             &self.context,
-            "shader_bin/lambertian_evaluate.rcall.spv",
+            "shader_bin/microfacet_evaluate.rcall.spv",
             entry_point_name.to_owned(),
             ShaderResourceLayout::default(),
         )?;
@@ -250,8 +251,8 @@ impl<'ctx> Scene<'ctx> {
         shader_groups.push(ShaderGroup::TriangleHit { closest_hit: &closest_hit_shader });
         let hit_group_index = shader_groups.len() - 1;
 
-        shader_groups.push(ShaderGroup::Callable { callable: &lambertian_shader });
-        let lambertian_group_index = shader_groups.len() - 1;
+        shader_groups.push(ShaderGroup::Callable { callable: &microfacet_shader });
+        let microfacet_group_index = shader_groups.len() - 1;
         
         let pipeline = Pipeline::new(self.context, &shader_groups)?;
 
@@ -272,11 +273,12 @@ impl<'ctx> Scene<'ctx> {
         }
 
         for material in &self.materials {
-            let sbt_data = LambertianData {
-                color: [material.base_color.x, material.base_color.y, material.base_color.z, 1.0],
+            let sbt_data = MicrofacetData {
+                ior: 1.54,
+                roughness: 0.20,
             };
 
-            sbt_desc.push_callable_entry(lambertian_group_index as u32, util::as_u8_slice(&sbt_data));
+            sbt_desc.push_callable_entry(microfacet_group_index as u32, util::as_u8_slice(&sbt_data));
         }
 
         let sbt = sbt_desc.build(self.context, &pipeline)?;

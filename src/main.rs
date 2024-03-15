@@ -245,56 +245,56 @@ unsafe fn render<'ctx>(context: &'ctx DeviceContext, scene: &CompiledScene, imag
     Ok(())
 }
 
-fn as_f32_row_major<const M: usize, const N: usize>(value: &serde_json::Value) -> Option<SMatrix<f32, M, N>> {
-    let array = value.as_array()?;
-    let mut matrix = SMatrix::zeros();
+// fn as_f32_row_major<const M: usize, const N: usize>(value: &serde_json::Value) -> Option<SMatrix<f32, M, N>> {
+//     let array = value.as_array()?;
+//     let mut matrix = SMatrix::zeros();
 
-    for i in 0..M {
-        for j in 0..N {
-            matrix[(i, j)] = array.get(i * N + j)?.as_f64()? as f32;
-        }
-    }
+//     for i in 0..M {
+//         for j in 0..N {
+//             matrix[(i, j)] = array.get(i * N + j)?.as_f64()? as f32;
+//         }
+//     }
 
-    Some(matrix)
-}
+//     Some(matrix)
+// }
 
-fn as_u32_row_major<const M: usize, const N: usize>(value: &serde_json::Value) -> Option<SMatrix<u32, M, N>> {
-    let array = value.as_array()?;
-    let mut matrix = SMatrix::zeros();
+// fn as_u32_row_major<const M: usize, const N: usize>(value: &serde_json::Value) -> Option<SMatrix<u32, M, N>> {
+//     let array = value.as_array()?;
+//     let mut matrix = SMatrix::zeros();
 
-    for i in 0..(M * N) {
-        matrix[i] = array.get(i)?.as_u64()? as u32;
-    }
+//     for i in 0..(M * N) {
+//         matrix[i] = array.get(i)?.as_u64()? as u32;
+//     }
 
-    Some(matrix)
-}
+//     Some(matrix)
+// }
 
-fn get_camera(reference: &serde_json::Value) -> Option<Camera> {
+// fn get_camera(reference: &serde_json::Value) -> Option<Camera> {
 
-    let position = Point3::from(as_f32_row_major(reference.get("cam_pos")?)?);
+//     let position = Point3::from(as_f32_row_major(reference.get("cam_pos")?)?);
 
-    let intrinsic = as_f32_row_major::<3, 3>(reference.get("K")?)?;
-    let rotation = as_f32_row_major::<3, 3>(reference.get("R")?)?;
-    let resolution = as_u32_row_major::<2, 1>(reference.get("im_resolution")?)?;
-    let scale = Matrix3::new(
-        resolution.x as f32, 0.0, 0.0,
-        0.0, resolution.y as f32, 0.0,
-        0.0, 0.0, 1.0,
-    );
+//     let intrinsic = as_f32_row_major::<3, 3>(reference.get("K")?)?;
+//     let rotation = as_f32_row_major::<3, 3>(reference.get("R")?)?;
+//     let resolution = as_u32_row_major::<2, 1>(reference.get("im_resolution")?)?;
+//     let scale = Matrix3::new(
+//         resolution.x as f32, 0.0, 0.0,
+//         0.0, resolution.y as f32, 0.0,
+//         0.0, 0.0, 1.0,
+//     );
 
-    println!("{}", (intrinsic * rotation).try_inverse()? * scale);
+//     println!("{}", (intrinsic * rotation).try_inverse()? * scale);
 
-    Some(Camera::new(position, (intrinsic * rotation).try_inverse()? * scale))
-}
+//     Some(Camera::new(position, (intrinsic * rotation).try_inverse()? * scale))
+// }
 
-fn get_scene_data() -> Option<Camera> {
+// fn get_scene_data() -> Option<Camera> {
 
-    let scene_estimate: serde_json::Value = serde_json::from_reader(File::open("./resources/scene_estimate.json").unwrap()).unwrap();
+//     let scene_estimate: serde_json::Value = serde_json::from_reader(File::open("./resources/scene_estimate.json").unwrap()).unwrap();
 
-    let reference = scene_estimate.get("photos")?.get("reference_0_0.png")?;
+//     let reference = scene_estimate.get("photos")?.get("reference_0_0.png")?;
 
-    get_camera(reference)
-}
+//     get_camera(reference)
+// }
 
 fn main() {
 

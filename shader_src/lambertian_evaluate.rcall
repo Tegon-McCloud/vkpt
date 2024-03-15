@@ -15,5 +15,7 @@ layout(shaderRecordEXT, std430) buffer sbtData {
 layout(location = 0) callableDataInEXT brdfEvaluation evaluation;
 
 void main() {
-    evaluation.weight = (1.0 / pi) * color.xyz;
+    float cos_theta_i = evaluation.wi.z;
+
+    evaluation.weight = (1.0 / pi) * color.xyz * max(cos_theta_i, 0.0);
 }

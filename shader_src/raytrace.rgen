@@ -5,7 +5,7 @@
 #include "../shader_include/definitions.glsl"
 #include "../shader_include/random.glsl"
 
-layout(set = 0, binding = 0) uniform accelerationStructureEXT topLevelAS;
+layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 layout(set = 0, binding = 1, rgba32f) uniform image2D image;
 
 struct Camera {
@@ -15,49 +15,58 @@ struct Camera {
 
 layout(push_constant) uniform Params {
     Camera camera;
-    uint sampleIndex;
+    uint sample_index;
 } params;
 
-layout(location = 0) rayPayloadEXT pathInfo payload;
+layout(location = 0) rayPayloadEXT pathInfo path_info;
 
 void main() {
 
     ivec2 size = ivec2(gl_LaunchSizeEXT.xy);
     ivec2 position = ivec2(gl_LaunchIDEXT.xy);
 
-    uint launchIndex = position.y * size.x + position.x;
-    tea(params.sampleIndex, launchIndex);
+    uint launch_index = position.y * size.x + position.x;
+    path_info.rand_state = tea(params.sample_index, launch_index);
+
+    vec2 uv = (vec2(position) + vec2(rnd(path_info.rand_state), rnd(path_info.rand_state))) / vec2(size);
     
-    vec2 uv = (vec2(position) + vec2(rnd(), rnd())) / vec2(size);
+    path_info.position = params.camera.position;
+    path_info.direction = normalize(params.camera.matrix * vec3(uv, 1.0));
+    path_info.depth = 0u;
 
-    vec3 origin = params.camera.position;
-    vec3 direction = normalize(params.camera.matrix * vec3(uv, 1.0));
+    path_info.weight = vec3(1.0);
+    path_info.radiance = vec3(0.0);
+    path_info.channel = 3u;
+    path_info.emit = 1u;
 
-    uint rayFlags = gl_RayFlagsOpaqueEXT;
-    uint cullMask = 0xff;
-    float tMin = 1e-8;
-    float tMax = 1e10;
+    const uint ray_flags = gl_RayFlagsOpaqueEXT;
+    const uint cull_mask = 0xff;
 
-    payload.weight = vec3(1.0);
-    payload.radiance = vec3(0.0);
+    for(uint i = 0; i < max_depth; i++) {
 
-    traceRayEXT(topLevelAS,   // acceleration structure
-              rayFlags,       // rayFlags
-              cullMask,       // cullMask
-              0,              // sbtRecordOffset
-              0,              // sbtRecordStride
-              0,              // missIndex
-              origin,     // ray origin
-              tMin,           // ray min range
-              direction,  // ray direction
-              tMax,           // ray max range
-              0               // payload (location = 0)
-    );
+        if (path_info.depth >= max_depth) {
+            break;
+        }
 
-    float sampleWeight = 1.0 / float(params.sampleIndex + 1);
+        traceRayEXT(tlas,     // acceleration structure
+                ray_flags,           // rayFlags
+                cull_mask,           // cullMask
+                0,                  // sbtRecordOffset
+                0,                  // sbtRecordStride
+                0,                  // missIndex
+                path_info.position, // ray origin
+                tmin,               // ray min range
+                path_info.direction,// ray direction
+                tmax,               // ray max range
+                0                   // payload (location = 0)
+        );
+
+    }
+
+    float sample_weight = 1.0 / float(params.sample_index + 1);
 
     vec3 prev = imageLoad(image, position).xyz;
-    vec3 new = mix(prev, payload.radiance, sampleWeight);
+    vec3 new = mix(prev, path_info.radiance, sample_weight);
 
     imageStore(image, position, vec4(new, 1.0));
 }
