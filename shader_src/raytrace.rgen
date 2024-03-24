@@ -33,7 +33,7 @@ void main() {
     path_info.position = params.camera.position;
     path_info.direction = normalize(params.camera.matrix * vec3(uv, 1.0));
     path_info.depth = 0u;
-
+    
     path_info.weight = vec3(1.0);
     path_info.radiance = vec3(0.0);
     path_info.channel = 3u;
@@ -69,4 +69,6 @@ void main() {
     vec3 new = mix(prev, path_info.radiance, sample_weight);
 
     imageStore(image, position, vec4(new, 1.0));
+
+
 }

@@ -26,6 +26,7 @@ struct intersection {
 
 struct brdfEvaluation {
     vec3 wi;
+    uint rand_state;
     vec3 wo;
     vec3 weight;
 };

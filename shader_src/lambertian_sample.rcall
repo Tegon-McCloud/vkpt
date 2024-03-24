@@ -16,7 +16,6 @@ layout(shaderRecordEXT, std430) buffer sbtData {
 layout(location = 0) callableDataInEXT brdfEvaluation evaluation;
 
 void main() {
-    float cos_theta_i = evaluation.wi.z;
-
-    evaluation.weight = vec3((roughness / pi) * max(cos_theta_i, 0.0));
+    evaluation.wi = sampleCosineHemisphere(evaluation.rand_state);
+    evaluation.weight = vec3(roughness);
 }

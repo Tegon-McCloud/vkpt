@@ -5,8 +5,8 @@
 #extension GL_GOOGLE_include_directive : enable
 
 #include "../shader_include/definitions.glsl"
-#include "../shader_include/random.glsl"
 #include "../shader_include/util.glsl"
+#include "../shader_include/microfacet.glsl"
 
 layout(shaderRecordEXT, std430) buffer sbtData {
     float ior;
@@ -16,7 +16,80 @@ layout(shaderRecordEXT, std430) buffer sbtData {
 layout(location = 0) callableDataInEXT brdfEvaluation evaluation;
 
 void main() {
-    float cos_theta_i = evaluation.wi.z;
     
-    evaluation.weight = vec3((1.0 / pi) * max(cos_theta_i, 0.0));
+    float alpha_sq = roughness * roughness;
+    
+    vec3 wi = evaluation.wi;
+    vec3 wo = evaluation.wo;
+
+    float cos_theta_i = wi.z;
+    float cos_theta_o = wo.z;
+
+    if (abs(cos_theta_i) < 1e-5) {
+        evaluation.weight = vec3(0.0);
+        return;
+    }
+
+    float ior_rel;
+
+    if (cos_theta_i < 0.0) {
+        ior_rel = ior;
+    } else {
+        ior_rel = 1.0 / ior;
+    }
+
+    bool transmit = cos_theta_i * cos_theta_o < 0.0;
+
+    vec3 wm_unnormalized;
+    if (transmit) {
+        wm_unnormalized = -(ior_rel*wi + wo);
+    } else {
+        wm_unnormalized = sign(cos_theta_i)*(wo + wi);
+    }
+
+    vec3 wm = normalize(wm_unnormalized);
+
+    float cos_theta_m = wm.z;
+    if (cos_theta_m < 1e-5) {
+        evaluation.weight = vec3(0.0);
+        return;
+    }
+
+    float cos_theta_om = dot(wo, wm);
+    float cos_ratio_o = cos_theta_om / cos_theta_o;
+
+    if (cos_ratio_o <= 0.0) {
+        evaluation.weight = vec3(0.0);
+        return;
+    }
+    
+    float cos_theta_im = dot(wi, wm);
+    float cos_ratio_i = cos_theta_im / cos_theta_i;
+
+    float reflectance = 1.0;
+
+    if (transmit) {
+        reflectance = reflectanceFresnel(abs(cos_theta_im), abs(cos_theta_om), ior_rel, 1.0);
+    } else {
+        float sin_theta_tm_sq = ior_rel * ior_rel * (1.0 - cos_theta_im * cos_theta_im);
+
+        if (sin_theta_tm_sq < 1.0) {
+            float cos_theta_t = sqrt(1.0 - sin_theta_tm_sq);
+            reflectance = reflectanceFresnel(abs(cos_theta_im), cos_theta_t, ior_rel, 1.0);
+        }
+    }
+
+    float cos_weight;
+
+    if (transmit) {
+        float a = ior_rel * cos_theta_im + cos_theta_om;
+        cos_weight = abs(cos_theta_im) * cos_ratio_o / (a * a);
+    } else {
+        cos_weight = 0.25 / abs(cos_theta_o);
+    }
+    
+    float distribution = ndfGgx(wm.z, alpha_sq);
+    float geometry = maskingShadowingGgx(abs(cos_theta_i), abs(cos_theta_o), alpha_sq);
+
+    evaluation.weight = vec3(reflectance * distribution * geometry * cos_weight);
 }

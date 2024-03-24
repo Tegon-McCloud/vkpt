@@ -7,6 +7,15 @@ use ash::prelude::VkResult;
 use ash::vk;
 use ash::extensions::{ext, khr};
 
+// pub struct Instance {
+//     debug_utils: ext::DebugUtils,
+// }
+
+// pub struct Device {
+//     acceleration_structure: khr::AccelerationStructure,
+//     ray_tracing_pipeline: khr::RayTracingPipeline,
+// }
+
 pub struct DeviceExtensions {
     pub acceleration_structure: khr::AccelerationStructure,
     pub ray_tracing_pipeline: khr::RayTracingPipeline,

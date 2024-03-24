@@ -39,22 +39,28 @@ uvec3 getFace() {
     );
 }
 
-vec3 evaluateBrdfCos(vec3 wi, vec3 wo) {
+vec3 evaluateBsdfCos(vec3 wi, vec3 wo) {
     evaluation.wi = wi;
     evaluation.wo = wo;
+    evaluation.rand_state = payload.rand_state;
+    
+    executeCallableEXT(2 * material_index, 0);
 
-    executeCallableEXT(material_index, 0);
+    payload.rand_state = evaluation.rand_state;
 
     return evaluation.weight;
 }
 
-void addDirectLighting(mat3 world_to_tangent, vec3 wo) {
-    vec3 light_dir = world_to_tangent * normalize(vec3(-1.0, -1.0, -1.0));
-
-    vec3 brdf = evaluateBrdfCos(-light_dir, wo);
+vec3 sampleBsdfCos(out vec3 wi, vec3 wo) {
+    evaluation.wo = wo;
+    evaluation.rand_state = payload.rand_state;
     
-    payload.radiance += pi * brdf * payload.weight;
-    payload.emit = 0;
+    executeCallableEXT(2 * material_index + 1, 0);
+
+    wi = evaluation.wi;
+    payload.rand_state = evaluation.rand_state;
+
+    return evaluation.weight;
 }
 
 void main() {
@@ -75,17 +81,26 @@ void main() {
     mat3 world_to_tangent = transpose(tangent_to_world);
     
     vec3 wo = -world_to_tangent * gl_WorldRayDirectionEXT;
-    
-    // addDirectLighting(world_to_tangent, wo);
-    
-    vec3 wi = sampleCosineHemisphere(payload.rand_state);
 
-    payload.depth = max_depth;
+    // vec3 light_dir = world_to_tangent * normalize(vec3(-1.0, -1.0, -1.0));
+
+    // vec3 bsdf = evaluateBsdfCos(-light_dir, wo);
+    
+    // payload.radiance += payload.weight * bsdf * pi;
+    // payload.emit = 0;
+    
+    vec3 wi;
+
+    payload.weight *= sampleBsdfCos(wi, wo);
+
+    if (wi == vec3(0.0)) {
+        payload.depth = max_depth;
+        return;
+    }
+    
     payload.position = hit_pos;
     payload.direction = tangent_to_world * wi;
-
-
-    payload.radiance = payload.direction;
-
+    
+    payload.depth += 1;
 }
 

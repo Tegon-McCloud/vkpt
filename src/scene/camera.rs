@@ -81,7 +81,6 @@ impl Default for Camera {
             ),
         }
     }
-
 }
 
 

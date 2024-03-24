@@ -12,7 +12,7 @@ use nalgebra::{Matrix3, Point3, SMatrix};
 use resource::{Image, ImageView, ReadBackBuffer};
 use scene::CompiledScene;
 
-use crate::{pipeline::ShaderData, scene::{camera::Camera, Scene}, util::as_u8_slice};
+use crate::{pipeline::ShaderData, scene::{camera::Camera, light::Environment, Scene}, util::as_u8_slice};
 
 pub mod util;
 pub mod context;
@@ -128,7 +128,7 @@ impl<'ctx> SampleTarget<'ctx> {
 unsafe fn render<'ctx>(context: &'ctx DeviceContext, scene: &CompiledScene, image: &Image<'ctx>, descriptor_set: vk::DescriptorSet) -> VkResult<()> {
 
     const SAMPLES_IN_FLIGHT: u64 = 2;
-    const SAMPLE_COUNT: u64 = 512;
+    const SAMPLE_COUNT: u64 = 8;
 
     let pipeline = scene.pipeline();
     let sbt = scene.sbt();
@@ -301,22 +301,6 @@ fn main() {
     unsafe {
         let context = DeviceContext::new().expect("failed to create device context");
 
-        let mut scene = Scene::new(&context);
-        scene.load("./resources/sphere.gltf", &context).unwrap();
-
-        // let camera = get_scene_data().unwrap();
-
-        let camera = Camera::new(
-            Point3::new(0.0, 0.0, 5.0),
-            Matrix3::new(
-                1.0, 0.0, -0.5,
-                0.0, -1.0, 0.5,
-                0.0, 0.0, -1.0,
-            )
-        );
-
-        scene.set_camera(camera);
-
         let img_width = 512;
         let img_height = 512;
     
@@ -343,17 +327,31 @@ fn main() {
         
         let descriptor_set_layout = context.device().create_descriptor_set_layout(&descriptor_set_layout_info, None).unwrap();
     
-        let compiled_scene = scene.compile(descriptor_set_layout).unwrap();
+        let mut scene = Scene::new(&context, descriptor_set_layout);
+        scene.load("./resources/sphere.gltf", &context).unwrap();
 
+        let camera = Camera::new(
+            Point3::new(0.0, 0.0, 5.0),
+            Matrix3::new(
+                1.0, 0.0, -0.5,
+                0.0, -1.0, 0.5,
+                0.0, 0.0, -1.0,
+            )
+        );
+
+        scene.set_camera(camera);
+        scene.set_environment(Environment::constant(&context).unwrap());
+
+        let compiled_scene = scene.compile().unwrap();
+
+        // should be part of scene compilation
         let (descriptor_set, descriptor_pool) = create_descriptor_set(&context, descriptor_set_layout, compiled_scene.tlas(), sample_target.view.inner()).unwrap();
-        
         
         let readback_buffer = ReadBackBuffer::new(
             &context,
             std::mem::size_of::<f32>() as u64 * 4 * img_width as u64 * img_height as u64,
             vk::BufferUsageFlags::TRANSFER_DST
         ).unwrap();
-        
         
         context.execute_commands(|cmd_buffer| {
             { // transition image to GENERAL

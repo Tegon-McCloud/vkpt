@@ -1,21 +1,16 @@
 use std::{ffi::CStr, ops::Range, path::Path};
 
 use ash::{vk, prelude::VkResult};
-use nalgebra::{Matrix3x4, Matrix4, Vector3};
+use nalgebra::{Matrix3x4, Matrix4};
 
 use crate::{context::DeviceContext, pipeline::{Pipeline, Shader, ShaderData, ShaderGroup, ShaderResourceLayout}, resource::{DeviceBuffer, UploadBuffer}, shader_binding_table::{ShaderBindingTable, ShaderBindingTableDescription}, util::{self, as_u8_slice}};
 
-use self::{camera::Camera, material::Material, mesh::Mesh};
+use self::{camera::Camera, light::{LightSource, Environment}, material::{Material, MaterialType}, mesh::Mesh};
 
 pub mod mesh;
 pub mod material;
+pub mod light;
 pub mod camera;
-
-struct GeometryInstance {
-    mesh: MeshHandle,
-    material: MaterialHandle,
-    transform: Matrix3x4<f32>,
-}
 
 #[derive(Debug, Clone, Copy)]
 pub struct MeshHandle {
@@ -26,6 +21,19 @@ pub struct MeshHandle {
 pub struct MaterialHandle {
     index: usize,
 }
+
+#[derive(Debug, Clone, Copy)]
+pub struct MaterialTypeHandle {
+    index: usize,
+}
+
+struct GeometryInstance {
+    mesh: MeshHandle,
+    material: MaterialHandle,
+    transform: Matrix3x4<f32>,
+}
+
+
 
 #[repr(C)]
 struct HitGroupSbtData {
@@ -44,26 +52,59 @@ struct MicrofacetData {
 pub struct Scene<'ctx> {
     context: &'ctx DeviceContext,
     meshes: Vec<Mesh<'ctx>>,
+    material_types: Vec<MaterialType<'ctx>>,
     materials: Vec<Material>,
     instances: Vec<GeometryInstance>,
     camera: Camera,
+    environment: Option<Environment<'ctx>>,
+    raygen_shader: Shader<'ctx>, // abstract this into camera
+    // miss_shader: Shader<'ctx>, // abstract this into light
+    closest_hit_shader: Shader<'ctx>
 }
 
 impl<'ctx> Scene<'ctx> {
 
-    pub fn new(context: &'ctx DeviceContext) -> Self {
+    pub fn new(context: &'ctx DeviceContext, raygen_desc_set_layout: vk::DescriptorSetLayout) -> Self {
+
+        let raygen_shader = unsafe {
+            Shader::new(
+                context,
+                "shader_bin/raytrace.rgen.spv",
+                CStr::from_bytes_with_nul_unchecked(b"main\0").to_owned(),
+                ShaderResourceLayout::new(vec![raygen_desc_set_layout], 68),
+            ).unwrap()
+        };
+
+        let closest_hit_shader = unsafe {
+            Shader::new(
+                context,
+                "shader_bin/raytrace.rchit.spv",
+                CStr::from_bytes_with_nul_unchecked(b"main\0").to_owned(),
+                ShaderResourceLayout::default(),
+            ).unwrap()
+        };
+
         Self {
             context,
             meshes: Vec::new(),
+            material_types: Vec::new(),
             materials: Vec::new(),
             instances: Vec::new(),
             camera: Camera::default(),
+            environment: None,
+            raygen_shader,
+            closest_hit_shader,
         }
     }
 
     pub fn add_mesh(&mut self, mesh: Mesh<'ctx>) -> MeshHandle {
         self.meshes.push(mesh);
         MeshHandle { index: self.meshes.len() - 1 }
+    }
+    
+    pub fn add_material_type(&mut self, material_type: MaterialType<'ctx>) -> MaterialTypeHandle {
+        self.material_types.push(material_type);
+        MaterialTypeHandle { index: self.material_types.len() - 1 }
     }
 
     pub fn add_material(&mut self, material: Material) -> MaterialHandle {
@@ -80,26 +121,29 @@ impl<'ctx> Scene<'ctx> {
         self.camera = camera;
     }
 
+    pub fn set_environment(&mut self, environment: Environment<'ctx>) {
+        self.environment = Some(environment);
+    }
+
     pub fn get_mesh(&self, mesh_id: usize) -> &Mesh<'ctx> {
         &self.meshes[mesh_id]
     }
 
-    pub unsafe fn compile<'a>(&'a self, raygen_desc_set_layout: vk::DescriptorSetLayout) -> VkResult<CompiledScene<'ctx, 'a>> {
+    pub fn compile<'a>(&'a self) -> VkResult<CompiledScene<'ctx, 'a>> {
         
-        let (tlas, tlas_buffer) = self.build_tlas()?;
-        let (sbt, pipeline) = self.make_sbt(raygen_desc_set_layout)?;
+        let (tlas, tlas_buffer) = unsafe { self.build_tlas()? };
+        let (sbt, pipeline) = unsafe { self.make_sbt()? };
 
         Ok(CompiledScene {
-            scene: self,
+            scene: self, // ensures that the compiled scene cannot outlive scene resources
 
-            tlas_buffer,
+            tlas_buffer, // ensures that tlas_buffer will live as long as tlas
             tlas,
             
             pipeline,
-            sbt
+            sbt,
         })
     }
-
 
     unsafe fn build_tlas(&self) -> VkResult<(vk::AccelerationStructureKHR, DeviceBuffer<'ctx>)> {
         let blas_instance_iter = self.instances.iter()
@@ -206,59 +250,54 @@ impl<'ctx> Scene<'ctx> {
         
         Ok((tlas, tlas_buffer))
     }
-
-
-    unsafe fn make_sbt(&self, raygen_desc_set_layout: vk::DescriptorSetLayout) -> VkResult<(ShaderBindingTable<'ctx>, Pipeline<'ctx>)> {
+    
+    // safety: the sbt will refer to resources that only lives as long as this scene.
+    unsafe fn make_sbt(&self) -> VkResult<(ShaderBindingTable<'ctx>, Pipeline<'ctx>)> {
         let mut shader_groups = Vec::new();
         let mut sbt_desc = ShaderBindingTableDescription::new();
 
-        let entry_point_name = CStr::from_bytes_with_nul_unchecked(b"main\0").to_owned();
+        self.add_raygen_entry(&mut sbt_desc, &mut shader_groups);
+        self.add_miss_entry(&mut sbt_desc, &mut shader_groups);
+        self.add_instance_entries(&mut sbt_desc, &mut shader_groups);
+        self.add_material_entries(&mut sbt_desc, &mut shader_groups);
 
-        let raygen_shader = Shader::new(
-            &self.context,
-            "shader_bin/raytrace.rgen.spv",
-            entry_point_name.clone(),
-            ShaderResourceLayout::new(vec![raygen_desc_set_layout], 68),
-        )?;
-        
-        let miss_shader = Shader::new(
-            &self.context,
-            "shader_bin/raytrace.rmiss.spv",
-            entry_point_name.clone(),
-            ShaderResourceLayout::default(),
-        )?;
-
-        let closest_hit_shader = Shader::new(
-            &self.context,
-            "shader_bin/raytrace.rchit.spv",
-            entry_point_name.clone(),
-            ShaderResourceLayout::default(),
-        )?;
-
-        let microfacet_shader = Shader::new(
-            &self.context,
-            "shader_bin/microfacet_evaluate.rcall.spv",
-            entry_point_name.to_owned(),
-            ShaderResourceLayout::default(),
-        )?;
-
-        shader_groups.push(ShaderGroup::Raygen { raygen: &raygen_shader });
-        let raygen_group_index = shader_groups.len() - 1;
-
-        shader_groups.push(ShaderGroup::Miss { miss: &miss_shader });
-        let miss_group_index = shader_groups.len() - 1;
-
-        shader_groups.push(ShaderGroup::TriangleHit { closest_hit: &closest_hit_shader });
-        let hit_group_index = shader_groups.len() - 1;
-
-        shader_groups.push(ShaderGroup::Callable { callable: &microfacet_shader });
-        let microfacet_group_index = shader_groups.len() - 1;
-        
         let pipeline = Pipeline::new(self.context, &shader_groups)?;
+        let sbt = sbt_desc.build(self.context, &pipeline)?;
 
-        sbt_desc.push_raygen_entry(raygen_group_index as u32, &[]);
-        sbt_desc.push_miss_entry(miss_group_index as u32, &[]);
-        
+        Ok((sbt, pipeline))
+    }
+
+    // safety: the sbt will refer to resources that only lives as long as this scene.
+    unsafe fn add_raygen_entry<'s, 'a>(
+        &'s self,
+        sbt_desc: &mut ShaderBindingTableDescription,
+        shader_groups: &mut Vec<ShaderGroup<'ctx, 'a>>,
+    ) where 's: 'a {
+        shader_groups.push(ShaderGroup::Raygen { raygen: &self.raygen_shader });
+        sbt_desc.push_raygen_entry((shader_groups.len() - 1) as u32, &[]);
+    }
+
+    // safety: the sbt will refer to resources that only lives as long as this scene.
+    unsafe fn add_miss_entry<'s, 'a>(
+        &'s self,
+        sbt_desc: &mut ShaderBindingTableDescription,
+        shader_groups: &mut Vec<ShaderGroup<'ctx, 'a>>,
+    ) where 's: 'a {
+
+        if let Some(environment) = &self.environment {
+            shader_groups.push(ShaderGroup::Miss { miss: environment.miss_shader().unwrap() });
+            sbt_desc.push_miss_entry((shader_groups.len() - 1) as u32, &[]);
+        }
+    }
+
+    // safety: the sbt will refer to resources that only lives as long as this scene.
+    unsafe fn add_instance_entries<'s, 'a>(
+        &'s self, 
+        sbt_desc: &mut ShaderBindingTableDescription,
+        shader_groups: &mut Vec<ShaderGroup<'ctx, 'a>>,
+    ) where 's: 'a {
+        shader_groups.push(ShaderGroup::TriangleHit { closest_hit: &self.closest_hit_shader });
+
         for instance in &self.instances {
             let mesh = &self.meshes[instance.mesh.index];
 
@@ -269,21 +308,37 @@ impl<'ctx> Scene<'ctx> {
                 normal_address: mesh.normal_address(),
             };
             
-            sbt_desc.push_hit_group_entry(hit_group_index as u32, as_u8_slice(&sbt_data));
+            sbt_desc.push_hit_group_entry((shader_groups.len() - 1) as u32, as_u8_slice(&sbt_data));
+        }
+    }
+
+    // safety: the sbt will refer to resources that only lives as long as this scene.
+    unsafe fn add_material_entries<'a>(
+        &'a self,
+        sbt_desc: &mut ShaderBindingTableDescription,
+        shader_groups: &mut Vec<ShaderGroup<'ctx, 'a>>,
+    ) {
+
+        let shader_group_begin = shader_groups.len();
+
+        for material_type in &self.material_types {
+            shader_groups.push(ShaderGroup::Callable { callable: &material_type.evaluation_shader });
+            shader_groups.push(ShaderGroup::Callable { callable: &material_type.sample_shader });    
         }
 
         for material in &self.materials {
+
+            let evaluation_index = shader_group_begin + 2 * material.material_type.index;
+            let sample_index = evaluation_index + 1;
+
             let sbt_data = MicrofacetData {
-                ior: 1.54,
-                roughness: 0.20,
+                ior: material.ior,
+                roughness: material.roughness,
             };
 
-            sbt_desc.push_callable_entry(microfacet_group_index as u32, util::as_u8_slice(&sbt_data));
+            sbt_desc.push_callable_entry(evaluation_index as u32, unsafe { util::as_u8_slice(&sbt_data) });
+            sbt_desc.push_callable_entry(sample_index as u32, unsafe { util::as_u8_slice(&sbt_data) });
         }
-
-        let sbt = sbt_desc.build(self.context, &pipeline)?;
-
-        Ok((sbt, pipeline))
     }
 
 }
@@ -362,18 +417,42 @@ impl<'ctx> Scene<'ctx> {
             mesh_ranges.push(mesh_begin..mesh_end);
         }
 
-        
+        let material_type = unsafe {
+            let entry_point_name = CStr::from_bytes_with_nul_unchecked(b"main\0").to_owned();
+
+            let evaluation_shader = Shader::new(
+                &self.context,
+                "shader_bin/microfacet_evaluate.rcall.spv",
+                entry_point_name.to_owned(),
+                ShaderResourceLayout::default(),
+            )?;
+    
+            let sample_shader = Shader::new(
+                &self.context,
+                "shader_bin/microfacet_sample.rcall.spv",
+                entry_point_name.to_owned(),
+                ShaderResourceLayout::default(),
+            )?;
+            
+            self.add_material_type(MaterialType {
+                evaluation_shader,
+                sample_shader,
+            })
+        };
+
         let default_material = self.add_material(Material {
-            base_color: Vector3::new(1.0, 1.0, 1.0),
+            ior: 1.54,
+            roughness: 0.1,
+            material_type,
         });
 
         let mut material_handles = Vec::new();
 
         for material in document.materials() {
-            let base_color_factor = material.pbr_metallic_roughness().base_color_factor();
-
             material_handles.push(self.add_material(Material {
-                base_color: Vector3::new(base_color_factor[0], base_color_factor[1], base_color_factor[2]),
+                ior: 1.54,
+                roughness: material.pbr_metallic_roughness().roughness_factor(),
+                material_type,
             }));
         }
 

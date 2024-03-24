@@ -1,0 +1,80 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_GOOGLE_include_directive : enable
+
+#include "../shader_include/definitions.glsl"
+#include "../shader_include/util.glsl"
+#include "../shader_include/microfacet.glsl"
+
+layout(shaderRecordEXT, std430) buffer sbtData {
+    float ior;
+    float roughness;
+};
+
+layout(location = 0) callableDataInEXT brdfEvaluation evaluation;
+
+void main() {
+    float alpha = roughness;
+    float alpha_sq = alpha * alpha;
+
+    vec3 wo = evaluation.wo;
+    bool inside = wo.z < 0.0;
+
+    float ior_1 = 1.0;
+    float ior_2 = ior;
+
+    if (inside) {
+        ior_1 = ior;
+        ior_2 = 1.0;
+    }
+    
+    float ior_rel = ior_1 / ior_2;
+
+    vec3 wm = sampleVndfGgx(wo, alpha, evaluation.rand_state);
+
+    if (wm.z < 1e-5) {
+        evaluation.wi = vec3(0.0);
+        return;
+    }
+
+    float cos_theta_om = dot(wo, wm);
+    float cos_ratio_o = cos_theta_om / wo.z;
+
+    if (cos_ratio_o <= 0.0) {
+        evaluation.wi = vec3(0.0);
+        return;
+    }
+
+    float reflectance = 1.0;
+
+    // float sin_theta_tm_sq = ior_rel * ior_rel * (1.0 - cos_theta_om * cos_theta_om);
+    // float cos_theta_tm;
+
+    // if (sin_theta_tm_sq < 1.0) {
+    //     cos_theta_tm = sqrt(1.0 - sin_theta_tm_sq);
+    //     reflectance = reflectanceFresnel(abs(cos_theta_om), cos_theta_tm, ior_1, ior_2);
+    // }
+
+    vec3 wi;
+
+    if (rnd(evaluation.rand_state) < reflectance) {
+        wi = 2.0 * dot(wo, wm) * wm - wo;
+    } else {
+        // wi = (ior_rel * cos_theta_om - sign(wo.z) * cos_theta_tm) * wm - ior_rel * wo;
+    }
+
+    float cos_theta_im = dot(wi, wm);
+    float cos_ratio_i = cos_theta_im / wi.z;
+
+    if (cos_ratio_i < 0.0) {
+        evaluation.wi = vec3(0.0);
+        return;
+    }
+    
+    float shadowing = geometryGgx(abs(wi.z), alpha_sq);
+
+    evaluation.weight = vec3(shadowing);
+    evaluation.wi = wi;
+}
