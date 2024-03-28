@@ -1,38 +1,17 @@
 use std::{ffi::{CStr, CString}, fs::File, io::{Read, Seek, SeekFrom}, path::Path};
 
 use ash::{prelude::VkResult, vk};
-use itertools::Itertools;
 
-use crate::{context::DeviceContext, util};
+use crate::{context::DeviceContext, shader_binding_table::{ShaderBindingTable, ShaderBindingTableDescription}, util};
 
 pub trait ShaderData {
     fn as_u8_slice<'a>(&'a self) -> &'a [u8];
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct ShaderResourceLayout {
-    descriptor_sets: Vec<vk::DescriptorSetLayout>,
-    push_constants_size: usize,
-}
-
-impl ShaderResourceLayout {
-    pub fn new(
-        descriptor_sets: Vec<vk::DescriptorSetLayout>,
-        push_constants_size: usize,
-    ) -> Self {
-    
-        Self {
-            descriptor_sets,
-            push_constants_size,
-        }
-    }
 }
 
 pub struct Shader<'a> {
     context: &'a DeviceContext,
     module: vk::ShaderModule,
     entry_point: CString,
-    resource_layout: ShaderResourceLayout,
 }
 
 impl<'a> Shader<'a> {
@@ -40,7 +19,6 @@ impl<'a> Shader<'a> {
         context: &'a DeviceContext,
         spv_path: P,
         entry_point: CString,
-        resource_layout: ShaderResourceLayout,
     ) -> VkResult<Self> {
         let spv_code = Self::read_spv(spv_path.as_ref());
         let info = vk::ShaderModuleCreateInfo::builder()
@@ -51,7 +29,6 @@ impl<'a> Shader<'a> {
             context,
             module,
             entry_point,
-            resource_layout,
         })
     }
 
@@ -110,18 +87,43 @@ pub enum ShaderGroup<'ctx, 'a> {
     },
 }
 
+pub struct ResourceLayout {
+    sets: Vec<vk::DescriptorSetLayout>,
+    constants: Vec<vk::PushConstantRange>,
+}
+
+impl ResourceLayout {
+    pub fn new(sets: Vec<vk::DescriptorSetLayout>, constants: Vec<vk::PushConstantRange>) -> ResourceLayout {
+        ResourceLayout {
+            sets,
+            constants,
+        }
+    }
+
+    pub fn descriptor_sets(&self) -> &[vk::DescriptorSetLayout] {
+        &self.sets
+    }
+
+    pub fn push_constants(&self) -> &[vk::PushConstantRange] {
+        &self.constants
+    }
+}
+
+
 pub struct Pipeline<'ctx> {
     context: &'ctx DeviceContext,
     layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
-    handle_data: Vec<u8>,
+    binding_table: ShaderBindingTable<'ctx>,
 }
 
 impl<'ctx> Pipeline<'ctx> {
 
     pub unsafe fn new(
         context: &'ctx DeviceContext,
-        shader_groups: &[ShaderGroup<'ctx, '_>]
+        resource_layout: &ResourceLayout,
+        shader_groups: &[ShaderGroup<'ctx, '_>],
+        binding_table_desc: ShaderBindingTableDescription,
     ) -> VkResult<Self> {
         
         let mut stages = vec![];
@@ -220,33 +222,9 @@ impl<'ctx> Pipeline<'ctx> {
             }
         }
 
-        let set_layouts = stages.iter()
-            .map(|stage| stage.resource_layout.descriptor_sets.iter().copied())
-            .flatten()
-            .collect_vec();
-        
-        let mut push_constant_offset = 0;
-        let mut push_constant_ranges = Vec::new();
-
-        for (stage, info) in stages.iter().zip(&stage_infos) {
-
-            let push_constants_size = stage.resource_layout.push_constants_size;
-
-            if push_constants_size != 0 {
-
-                push_constant_ranges.push(vk::PushConstantRange {
-                    stage_flags: info.stage,
-                    offset: push_constant_offset as u32,
-                    size: push_constants_size as u32,
-                });
-
-                push_constant_offset += push_constants_size;
-            }
-        }
-
         let layout_info = vk::PipelineLayoutCreateInfo::builder()
-            .set_layouts(&set_layouts)
-            .push_constant_ranges(&push_constant_ranges);
+            .set_layouts(&resource_layout.sets)
+            .push_constant_ranges(&resource_layout.constants);
 
         let layout = context.create_pipeline_layout(&layout_info)?;
         
@@ -261,29 +239,26 @@ impl<'ctx> Pipeline<'ctx> {
 
         let handle_data = context.get_ray_tracing_shader_group_handles(pipeline, 0, group_infos.len() as u32)?;
 
-        Ok(Self {
+        let binding_table = binding_table_desc.build(context, &handle_data)?;
+
+        Ok(Pipeline {
             context,
             layout,
             pipeline,
-            handle_data,
+            binding_table,
         })
-    }
-
-    pub fn group_count(&self) -> u32 {
-        (self.handle_data.len() / self.handle_stride()) as u32
     }
 
     pub fn pipeline(&self) -> vk::Pipeline {
         self.pipeline
     }
 
-    pub fn layout(&self) -> vk::PipelineLayout {
-        self.layout
+    pub fn binding_table(&self) -> &ShaderBindingTable<'ctx> {
+        &self.binding_table
     }
 
-    pub fn get_group_handle(&self, index: u32) -> &[u8] {
-        let stride = self.handle_stride();
-        &self.handle_data[stride * index as usize..stride * (index + 1) as usize]
+    pub fn layout(&self) -> vk::PipelineLayout {
+        self.layout
     }
 
     fn handle_stride(&self) -> usize {

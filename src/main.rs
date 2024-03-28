@@ -2,96 +2,31 @@
 #![feature(int_roundings)]
 #![feature(once_cell_try)]
 
-use std::fs::File;
-
 use ash::{prelude::VkResult, vk};
+use gpu_allocator::MemoryLocation;
 use itertools::Itertools;
 
 use context::DeviceContext;
-use nalgebra::{Matrix3, Point3, SMatrix};
-use resource::{Image, ImageView, ReadBackBuffer};
-use scene::CompiledScene;
+use nalgebra::{Matrix3, Point3};
+use pipeline::Pipeline;
+use resource::{Image, ImageView, ReadBackBuffer, UploadBuffer};
+use scene::SceneDescriptorSet;
 
-use crate::{pipeline::ShaderData, scene::{camera::Camera, light::Environment, Scene}, util::as_u8_slice};
+use crate::{pipeline::{ResourceLayout, ShaderData}, scene::{camera::Camera, light::Environment, Scene}, shader_binding_table::ShaderBindingTableDescription, util::as_u8_slice};
 
 pub mod util;
 pub mod context;
 pub mod resource;
+pub mod descriptor;
 pub mod pipeline;
 pub mod shader_binding_table;
 pub mod scene;
 pub mod output;
 
-
-pub fn create_descriptor_set<'a>(
-    context: &'a DeviceContext,
-    set_layout: vk::DescriptorSetLayout,
-    accel_structure: vk::AccelerationStructureKHR,
-    output_view: vk::ImageView,
-) -> VkResult<(vk::DescriptorSet, vk::DescriptorPool)> {
-    unsafe {
-
-        let pool_sizes = [
-            vk::DescriptorPoolSize::builder()
-                .descriptor_count(1)
-                .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                .build(),
-
-            vk::DescriptorPoolSize::builder()
-                .descriptor_count(1)
-                .ty(vk::DescriptorType::STORAGE_IMAGE)
-                .build(),
-        ];
-
-        let pool_info = vk::DescriptorPoolCreateInfo::builder()
-            .max_sets(1)
-            .pool_sizes(&pool_sizes);
-
-        let pool = context.device().create_descriptor_pool(&pool_info, None)?;
-
-        let alloc_info = vk::DescriptorSetAllocateInfo::builder()
-            .descriptor_pool(pool)
-            .set_layouts(std::slice::from_ref(&set_layout));
-
-        let set = context.device().allocate_descriptor_sets(&alloc_info)?[0];
-
-        let mut accel_structure_write = vk::WriteDescriptorSetAccelerationStructureKHR::builder()
-            .acceleration_structures(std::slice::from_ref(&accel_structure))
-            .build();
-
-        let mut accel_write = vk::WriteDescriptorSet::builder()
-            .dst_set(set)
-            .dst_binding(0)
-            .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-            .push_next(&mut accel_structure_write)
-            .build();
-
-        accel_write.descriptor_count = 1;
-
-        let output_image_info = vk::DescriptorImageInfo::builder()
-            .image_view(output_view)
-            .image_layout(vk::ImageLayout::GENERAL)
-            .sampler(vk::Sampler::null())
-            .build();
-
-        let output_image_write = vk::WriteDescriptorSet::builder()
-            .dst_set(set)
-            .dst_binding(1)
-            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-            .image_info(std::slice::from_ref(&output_image_info))
-            .build();
-
-        context.device().update_descriptor_sets(&[accel_write, output_image_write], &[]);
-
-        Ok((set, pool))
-    }
-}
-
 struct SampleTarget<'ctx> {
     #[allow(unused)]
     context: &'ctx DeviceContext,
     image: Image<'ctx>,
-    view: ImageView<'ctx>,
 }
 
 impl<'ctx> SampleTarget<'ctx> {
@@ -109,12 +44,10 @@ impl<'ctx> SampleTarget<'ctx> {
             .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST);
 
         let image = Image::new(context, &image_info, gpu_allocator::MemoryLocation::GpuOnly)?;
-        let view = ImageView::new(&image, vk::Format::R32G32B32A32_SFLOAT, 0..1, 0..1)?;
 
         Ok(Self {
             context,
             image,
-            view,
         })
     }
 }
@@ -125,13 +58,31 @@ impl<'ctx> SampleTarget<'ctx> {
 
 // }
 
-unsafe fn render<'ctx>(context: &'ctx DeviceContext, scene: &CompiledScene, image: &Image<'ctx>, descriptor_set: vk::DescriptorSet) -> VkResult<()> {
+unsafe fn render<'ctx>(context: &'ctx DeviceContext, scene: &Scene, image: &Image<'ctx>) -> VkResult<()> {
 
     const SAMPLES_IN_FLIGHT: u64 = 2;
-    const SAMPLE_COUNT: u64 = 8;
+    const SAMPLE_COUNT: u64 = 512;
 
-    let pipeline = scene.pipeline();
-    let sbt = scene.sbt();
+    let descriptor_set = scene.create_descriptor_set(ImageView::new(image, vk::Format::R32G32B32A32_SFLOAT, 0..1, 0..1)?)?;
+
+    let mut shader_groups = Vec::new();
+    let mut binding_table_desc = ShaderBindingTableDescription::new();
+
+    scene.add_binding_table_entries(&mut shader_groups, &mut binding_table_desc);
+
+    let descriptor_set_layouts = vec![descriptor_set.layout()];
+
+    let push_constant_ranges = vec![
+        vk::PushConstantRange {
+            stage_flags: vk::ShaderStageFlags::RAYGEN_KHR,
+            offset: 0,
+            size: 68,
+        },
+    ];
+
+    let resource_layout = ResourceLayout::new(descriptor_set_layouts, push_constant_ranges);
+    let pipeline = Pipeline::new(context, &resource_layout, &shader_groups, binding_table_desc)?;
+    let binding_table = pipeline.binding_table();
 
     let cmd_pool_info = vk::CommandPoolCreateInfo::builder()
         .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
@@ -193,17 +144,18 @@ unsafe fn render<'ctx>(context: &'ctx DeviceContext, scene: &CompiledScene, imag
         context.device().cmd_pipeline_barrier2(cmd_buffer, &dependency_info);
 
         context.device().cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::RAY_TRACING_KHR, pipeline.pipeline());
-        context.device().cmd_bind_descriptor_sets(cmd_buffer, vk::PipelineBindPoint::RAY_TRACING_KHR, pipeline.layout(), 0, &[descriptor_set], &[]);
+
+        context.device().cmd_bind_descriptor_sets(cmd_buffer, vk::PipelineBindPoint::RAY_TRACING_KHR, pipeline.layout(), 0, &[descriptor_set.inner()], &[]);
         
         context.device().cmd_push_constants(cmd_buffer, pipeline.layout(), vk::ShaderStageFlags::RAYGEN_KHR, 0, scene.camera_data().as_u8_slice());
         context.device().cmd_push_constants(cmd_buffer, pipeline.layout(), vk::ShaderStageFlags::RAYGEN_KHR, 64, as_u8_slice(&(i as u32)));
 
         context.extensions().ray_tracing_pipeline.cmd_trace_rays(
             cmd_buffer,
-            &sbt.raygen_region(),
-            &sbt.miss_region(),
-            &sbt.hit_group_region(),
-            &sbt.callable_region(),
+            &binding_table.raygen_region(),
+            &binding_table.miss_region(),
+            &binding_table.hit_group_region(),
+            &binding_table.callable_region(),
             image.resolution().0,
             image.resolution().1,
             1,
@@ -243,6 +195,117 @@ unsafe fn render<'ctx>(context: &'ctx DeviceContext, scene: &CompiledScene, imag
 
 
     Ok(())
+}
+
+fn load_environment_map<'ctx>(context: &'ctx DeviceContext) -> VkResult<Image<'ctx>> {
+
+    let host_image = image::io::Reader::open("resources/luxo_pxr_campus.hdr.png")
+        .expect("failed to read image")
+        .decode()
+        .expect("failed to decode image");
+
+    let queue_family = context.queue_family();
+
+    let image_info = vk::ImageCreateInfo::builder()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(vk::Format::R8G8B8A8_UINT)
+        .extent(vk::Extent3D { width: host_image.width(), height: host_image.height(), depth: 1 })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::OPTIMAL)
+        .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .queue_family_indices(std::slice::from_ref(&queue_family))
+        .initial_layout(vk::ImageLayout::UNDEFINED);
+
+    let image = Image::new(context, &image_info, MemoryLocation::GpuOnly)?;
+
+    let mut buffer = UploadBuffer::new(
+        context,
+        (host_image.width() * host_image.height() * 4) as u64,
+        vk::BufferUsageFlags::TRANSFER_SRC,
+    )?;
+
+    let pixels = host_image.as_rgba8().unwrap().as_raw();
+
+    unsafe {
+        buffer.write_u8_slice(pixels, 0);
+        buffer.flush()?;
+
+        context.execute_commands(|cmd_buffer| {
+
+
+            // transition image to transfer destination
+            let image_barrier = vk::ImageMemoryBarrier2::builder()
+                .src_stage_mask(vk::PipelineStageFlags2::NONE)
+                .src_access_mask(vk::AccessFlags2::NONE)
+                .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .image(image.inner())
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .build();
+
+            let dependency_info = vk::DependencyInfo::builder()
+                .image_memory_barriers(std::slice::from_ref(&image_barrier));
+
+            context.device().cmd_pipeline_barrier2(cmd_buffer, &dependency_info);
+
+            let copy_region = vk::BufferImageCopy2::builder()
+                .buffer_offset(0)
+                .buffer_row_length(host_image.width())
+                .buffer_image_height(host_image.height())
+                .image_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                .image_extent(vk::Extent3D { width: host_image.width(), height: host_image.height(), depth: 1 })
+                .build();
+            
+            let copy_info = vk::CopyBufferToImageInfo2::builder()
+                .src_buffer(buffer.handle())
+                .dst_image(image.inner())
+                .dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .regions(std::slice::from_ref(&copy_region));
+
+            context.device().cmd_copy_buffer_to_image2(cmd_buffer, &copy_info);
+
+            let image_barrier = vk::ImageMemoryBarrier2::builder()
+                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+                .dst_access_mask(vk::AccessFlags2::SHADER_READ)
+                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image(image.inner())
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .build();
+
+            let dependency_info = vk::DependencyInfo::builder()
+                .image_memory_barriers(std::slice::from_ref(&image_barrier));
+
+            context.device().cmd_pipeline_barrier2(cmd_buffer, &dependency_info);
+        })?;
+    }
+
+    Ok(image)
 }
 
 // fn as_f32_row_major<const M: usize, const N: usize>(value: &serde_json::Value) -> Option<SMatrix<f32, M, N>> {
@@ -306,28 +369,7 @@ fn main() {
     
         let sample_target = SampleTarget::new(&context, img_width, img_height).unwrap();
 
-        let descriptor_set_layout_bindings = [
-            vk::DescriptorSetLayoutBinding::builder()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR)
-                .build(),
-    
-            vk::DescriptorSetLayoutBinding::builder()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR)
-                .build(),
-        ];
-    
-        let descriptor_set_layout_info = vk::DescriptorSetLayoutCreateInfo::builder()
-            .bindings(&descriptor_set_layout_bindings);
-        
-        let descriptor_set_layout = context.device().create_descriptor_set_layout(&descriptor_set_layout_info, None).unwrap();
-    
-        let mut scene = Scene::new(&context, descriptor_set_layout);
+        let mut scene = Scene::new(&context);
         scene.load("./resources/sphere.gltf", &context).unwrap();
 
         let camera = Camera::new(
@@ -340,12 +382,12 @@ fn main() {
         );
 
         scene.set_camera(camera);
-        scene.set_environment(Environment::constant(&context).unwrap());
+        // scene.set_environment(Environment::constant(&context).unwrap());
 
-        let compiled_scene = scene.compile().unwrap();
+        let environment_map = load_environment_map(&context).unwrap();
 
-        // should be part of scene compilation
-        let (descriptor_set, descriptor_pool) = create_descriptor_set(&context, descriptor_set_layout, compiled_scene.tlas(), sample_target.view.inner()).unwrap();
+        let environment_map_handle = scene.add_texture(environment_map);
+        scene.set_environment(Environment::spherical(&context, environment_map_handle).unwrap());
         
         let readback_buffer = ReadBackBuffer::new(
             &context,
@@ -396,7 +438,7 @@ fn main() {
             }
         }).unwrap();
 
-        render(&context, &compiled_scene, &sample_target.image, descriptor_set).unwrap();
+        render(&context, &scene, &sample_target.image).unwrap();
         
         context.execute_commands(|cmd_buffer| {
             { // transition image to TRANSFER_SRC
@@ -491,11 +533,6 @@ fn main() {
 
         let img = image::RgbaImage::from_vec(img_width, img_height, img_raw_u8).unwrap();
 
-        img.save("output.png").unwrap(); 
-
-        //context.device().free_descriptor_sets(descriptor_pool, &[descriptor_set]).unwrap();
-        context.device().destroy_descriptor_set_layout(descriptor_set_layout, None);
-        context.device().destroy_descriptor_pool(descriptor_pool, None);
-
+        img.save("output.png").unwrap();
     }
 }

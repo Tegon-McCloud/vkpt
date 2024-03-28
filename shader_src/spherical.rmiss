@@ -4,7 +4,7 @@
 
 #include "../shader_include/definitions.glsl"
 
-layout(set = 0, binding = 2) uniform sampler2D environment_map;
+layout(set = 0, binding = 2) uniform usampler2D environment_map;
 
 layout(location = 0) rayPayloadInEXT pathInfo payload;
 
@@ -17,9 +17,10 @@ void main() {
         acos(direction.y) / pi
     );
 
-    vec3 env_color = texture(environment_map, uv).rgb;
+    uvec4 env_rgbe = texture(environment_map, uv);
+    vec3 env_radiance = (1.0 / 256.0) * vec3(env_rgbe.rgb) * pow(2.0, float(env_rgbe.a) - 128.0);
     
-    payload.radiance += payload.weight * env_color;
+    payload.radiance += payload.weight * env_radiance;
     payload.depth = max_depth; // end the path
 
 }

@@ -1,9 +1,10 @@
 use std::{ffi::CStr, ops::Range, path::Path};
 
 use ash::{vk, prelude::VkResult};
+use gltf::json::extensions::texture;
 use nalgebra::{Matrix3x4, Matrix4};
 
-use crate::{context::DeviceContext, pipeline::{Pipeline, Shader, ShaderData, ShaderGroup, ShaderResourceLayout}, resource::{DeviceBuffer, UploadBuffer}, shader_binding_table::{ShaderBindingTable, ShaderBindingTableDescription}, util::{self, as_u8_slice}};
+use crate::{context::DeviceContext, pipeline::{Shader, ShaderData, ShaderGroup}, resource::{DeviceBuffer, Image, ImageView, UploadBuffer}, shader_binding_table::ShaderBindingTableDescription, util::{self, as_u8_slice}};
 
 use self::{camera::Camera, light::{LightSource, Environment}, material::{Material, MaterialType}, mesh::Mesh};
 
@@ -17,13 +18,19 @@ pub struct MeshHandle {
     index: usize,
 }
 
+
 #[derive(Debug, Clone, Copy)]
-pub struct MaterialHandle {
+pub struct MaterialTypeHandle {
     index: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct MaterialTypeHandle {
+pub struct TextureHandle {
+    index: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MaterialHandle {
     index: usize,
 }
 
@@ -32,8 +39,6 @@ struct GeometryInstance {
     material: MaterialHandle,
     transform: Matrix3x4<f32>,
 }
-
-
 
 #[repr(C)]
 struct HitGroupSbtData {
@@ -53,25 +58,25 @@ pub struct Scene<'ctx> {
     context: &'ctx DeviceContext,
     meshes: Vec<Mesh<'ctx>>,
     material_types: Vec<MaterialType<'ctx>>,
+    textures: Vec<Image<'ctx>>,
     materials: Vec<Material>,
     instances: Vec<GeometryInstance>,
     camera: Camera,
     environment: Option<Environment<'ctx>>,
     raygen_shader: Shader<'ctx>, // abstract this into camera
     // miss_shader: Shader<'ctx>, // abstract this into light
-    closest_hit_shader: Shader<'ctx>
+    closest_hit_shader: Shader<'ctx>,
 }
 
 impl<'ctx> Scene<'ctx> {
 
-    pub fn new(context: &'ctx DeviceContext, raygen_desc_set_layout: vk::DescriptorSetLayout) -> Self {
-
+    pub fn new(context: &'ctx DeviceContext) -> Self {
+        
         let raygen_shader = unsafe {
             Shader::new(
                 context,
                 "shader_bin/raytrace.rgen.spv",
                 CStr::from_bytes_with_nul_unchecked(b"main\0").to_owned(),
-                ShaderResourceLayout::new(vec![raygen_desc_set_layout], 68),
             ).unwrap()
         };
 
@@ -80,7 +85,6 @@ impl<'ctx> Scene<'ctx> {
                 context,
                 "shader_bin/raytrace.rchit.spv",
                 CStr::from_bytes_with_nul_unchecked(b"main\0").to_owned(),
-                ShaderResourceLayout::default(),
             ).unwrap()
         };
 
@@ -88,6 +92,7 @@ impl<'ctx> Scene<'ctx> {
             context,
             meshes: Vec::new(),
             material_types: Vec::new(),
+            textures: Vec::new(),
             materials: Vec::new(),
             instances: Vec::new(),
             camera: Camera::default(),
@@ -105,6 +110,11 @@ impl<'ctx> Scene<'ctx> {
     pub fn add_material_type(&mut self, material_type: MaterialType<'ctx>) -> MaterialTypeHandle {
         self.material_types.push(material_type);
         MaterialTypeHandle { index: self.material_types.len() - 1 }
+    }
+
+    pub fn add_texture(&mut self, texture: Image<'ctx>) ->  TextureHandle {
+        self.textures.push(texture);
+        TextureHandle { index: self.textures.len() - 1 }
     }
 
     pub fn add_material(&mut self, material: Material) -> MaterialHandle {
@@ -129,20 +139,162 @@ impl<'ctx> Scene<'ctx> {
         &self.meshes[mesh_id]
     }
 
-    pub fn compile<'a>(&'a self) -> VkResult<CompiledScene<'ctx, 'a>> {
-        
-        let (tlas, tlas_buffer) = unsafe { self.build_tlas()? };
-        let (sbt, pipeline) = unsafe { self.make_sbt()? };
+    pub fn camera_data(&self) -> impl ShaderData {
+        self.camera.serialize()
+    }
 
-        Ok(CompiledScene {
+    pub unsafe fn create_descriptor_set<'a>(&'a self, output_view: ImageView<'ctx>) -> VkResult<SceneDescriptorSet<'ctx, 'a>> {
+
+        let layout = self.create_descriptor_set_layout()?;
+
+        let sampler_info = vk::SamplerCreateInfo::builder()
+            .mag_filter(vk::Filter::NEAREST)
+            .min_filter(vk::Filter::NEAREST)
+            .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+            .address_mode_u(vk::SamplerAddressMode::REPEAT)
+            .address_mode_v(vk::SamplerAddressMode::REPEAT)
+            .address_mode_w(vk::SamplerAddressMode::REPEAT)
+            .mip_lod_bias(0.0)
+            .anisotropy_enable(false)
+            .compare_enable(false)
+            .min_lod(0.0)
+            .max_lod(vk::LOD_CLAMP_NONE)
+            .unnormalized_coordinates(false);
+
+        let sampler = self.context.device().create_sampler(&sampler_info, None)?;
+
+        let texture_views = self.textures.iter()
+            .map(|texture| ImageView::new(texture, vk::Format::R8G8B8A8_UINT, 0..1, 0..1))
+            .collect::<VkResult<Vec<_>>>()?;
+
+        let (tlas, tlas_buffer) = self.build_tlas()?;
+
+
+        let pool_sizes = [
+            vk::DescriptorPoolSize::builder()
+                .descriptor_count(1)
+                .ty(vk::DescriptorType::STORAGE_IMAGE)
+                .build(),
+
+            vk::DescriptorPoolSize::builder()
+                .descriptor_count(1)
+                .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                .build(),
+
+            vk::DescriptorPoolSize::builder()
+                .descriptor_count(1)
+                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .build()
+        ];
+
+        let pool_info = vk::DescriptorPoolCreateInfo::builder()
+            .max_sets(1)
+            .pool_sizes(&pool_sizes);
+        
+        let pool = self.context.device().create_descriptor_pool(&pool_info, None)?;
+
+        let alloc_info = vk::DescriptorSetAllocateInfo::builder()
+            .descriptor_pool(pool)
+            .set_layouts(std::slice::from_ref(&layout));
+  
+        let set = self.context.device().allocate_descriptor_sets(&alloc_info)?[0];
+
+        let mut accel_structure_write = vk::WriteDescriptorSetAccelerationStructureKHR::builder()
+            .acceleration_structures(std::slice::from_ref(&tlas))
+            .build();
+
+        let mut accel_write = vk::WriteDescriptorSet::builder()
+            .dst_set(set)
+            .dst_binding(0)
+            .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+            .push_next(&mut accel_structure_write)
+            .build();
+
+        accel_write.descriptor_count = 1;
+
+        let output_image_info = vk::DescriptorImageInfo::builder()
+            .sampler(vk::Sampler::null())
+            .image_view(output_view.inner())
+            .image_layout(vk::ImageLayout::GENERAL)
+            .build();
+
+        let output_image_write = vk::WriteDescriptorSet::builder()
+            .dst_set(set)
+            .dst_binding(1)
+            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+            .image_info(std::slice::from_ref(&output_image_info))
+            .build();
+
+        let texture_image_info = vk::DescriptorImageInfo::builder()
+            .sampler(sampler)
+            .image_view(texture_views[0].inner())
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .build();
+            
+        let texture_image_write = vk::WriteDescriptorSet::builder()
+            .dst_set(set)
+            .dst_binding(2)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(std::slice::from_ref(&texture_image_info))
+            .build();
+
+        self.context.device().update_descriptor_sets(
+            &[
+                accel_write,
+                output_image_write,
+                texture_image_write,
+            ],
+            &[],
+        );
+
+        Ok(SceneDescriptorSet {
             scene: self, // ensures that the compiled scene cannot outlive scene resources
+
+            output_view,
 
             tlas_buffer, // ensures that tlas_buffer will live as long as tlas
             tlas,
-            
-            pipeline,
-            sbt,
+
+            texture_views,
+
+            layout,
+
+            descriptor_pool: pool,
+            descriptor_set: set,
         })
+    }
+
+    unsafe fn create_descriptor_set_layout(&self) -> VkResult<vk::DescriptorSetLayout> {
+        
+        let layout_bindings = [
+            vk::DescriptorSetLayoutBinding::builder()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR)
+                .build(),
+    
+            vk::DescriptorSetLayoutBinding::builder()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR)
+                .build(),
+
+            vk::DescriptorSetLayoutBinding::builder()
+                .binding(2)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::ALL)
+                .build(),
+        ];
+    
+        let layout_info = vk::DescriptorSetLayoutCreateInfo::builder()
+            .bindings(&layout_bindings);
+        
+        let layout = self.context.device().create_descriptor_set_layout(&layout_info, None).unwrap();
+        
+        Ok(layout)
     }
 
     unsafe fn build_tlas(&self) -> VkResult<(vk::AccelerationStructureKHR, DeviceBuffer<'ctx>)> {
@@ -250,21 +402,17 @@ impl<'ctx> Scene<'ctx> {
         
         Ok((tlas, tlas_buffer))
     }
-    
-    // safety: the sbt will refer to resources that only lives as long as this scene.
-    unsafe fn make_sbt(&self) -> VkResult<(ShaderBindingTable<'ctx>, Pipeline<'ctx>)> {
-        let mut shader_groups = Vec::new();
-        let mut sbt_desc = ShaderBindingTableDescription::new();
 
-        self.add_raygen_entry(&mut sbt_desc, &mut shader_groups);
-        self.add_miss_entry(&mut sbt_desc, &mut shader_groups);
-        self.add_instance_entries(&mut sbt_desc, &mut shader_groups);
-        self.add_material_entries(&mut sbt_desc, &mut shader_groups);
-
-        let pipeline = Pipeline::new(self.context, &shader_groups)?;
-        let sbt = sbt_desc.build(self.context, &pipeline)?;
-
-        Ok((sbt, pipeline))
+    // safety: sbt will refer to resources that only lives for 's
+    pub unsafe fn add_binding_table_entries<'s, 'a>(
+        &'s self,
+        shader_groups: &mut Vec<ShaderGroup<'ctx, 'a>>,
+        sbt_desc: &mut ShaderBindingTableDescription,
+    ) where 's: 'a {
+        self.add_raygen_entry(sbt_desc, shader_groups);
+        self.add_miss_entry(sbt_desc, shader_groups);
+        self.add_instance_entries(sbt_desc, shader_groups);
+        self.add_material_entries(sbt_desc, shader_groups);
     }
 
     // safety: the sbt will refer to resources that only lives as long as this scene.
@@ -341,48 +489,55 @@ impl<'ctx> Scene<'ctx> {
         }
     }
 
+
+
 }
 
 
-pub struct CompiledScene<'ctx, 'a> {
+pub struct SceneDescriptorSet<'ctx, 'a> {
     scene: &'a Scene<'ctx>,
     
     #[allow(unused)]
+    output_view: ImageView<'ctx>,
+
+    #[allow(unused)]
     tlas_buffer: DeviceBuffer<'ctx>,
     tlas: vk::AccelerationStructureKHR,
-    
-    pipeline: Pipeline<'ctx>,
-    sbt: ShaderBindingTable<'ctx>,
+
+    texture_views: Vec<ImageView<'ctx>>,
+
+    layout: vk::DescriptorSetLayout,
+
+    descriptor_pool: vk::DescriptorPool,
+    descriptor_set: vk::DescriptorSet,
 }
 
-impl<'ctx> CompiledScene<'ctx, '_> {
+impl<'ctx> SceneDescriptorSet<'ctx, '_> {
+
+    pub fn context(&self) -> &'ctx DeviceContext {
+        self.scene.context
+    }
 
     pub fn tlas(&self) -> vk::AccelerationStructureKHR {
         self.tlas
     }
 
-    pub fn sbt(&self) -> &ShaderBindingTable<'ctx> {
-        &self.sbt
-    } 
-
-    pub fn pipeline(&self) -> &Pipeline<'ctx> {
-        &self.pipeline
+    pub unsafe fn layout(&self) -> vk::DescriptorSetLayout {
+        self.layout
     }
 
-    pub fn camera_data(&self) -> impl ShaderData {
-        self.scene.camera.serialize()
-    }
-
-    pub unsafe fn bind(&self, cmd_buffer: vk::CommandBuffer) {
-
+    pub unsafe fn inner(&self) -> vk::DescriptorSet {
+        self.descriptor_set
     }
 }
 
-impl<'ctx, 'a> Drop for CompiledScene<'ctx, 'a> {
+impl<'ctx, 'a> Drop for SceneDescriptorSet<'ctx, 'a> {
     fn drop(&mut self) {
         unsafe {
-            self.scene.context.extensions().acceleration_structure.destroy_acceleration_structure(self.tlas, None);
-        }    
+            self.context().extensions().acceleration_structure.destroy_acceleration_structure(self.tlas, None);
+            self.context().device().destroy_descriptor_pool(self.descriptor_pool, None);
+            self.context().device().destroy_descriptor_set_layout(self.layout, None);
+        }
     }
 }
 
@@ -424,14 +579,12 @@ impl<'ctx> Scene<'ctx> {
                 &self.context,
                 "shader_bin/microfacet_evaluate.rcall.spv",
                 entry_point_name.to_owned(),
-                ShaderResourceLayout::default(),
             )?;
     
             let sample_shader = Shader::new(
                 &self.context,
                 "shader_bin/microfacet_sample.rcall.spv",
                 entry_point_name.to_owned(),
-                ShaderResourceLayout::default(),
             )?;
             
             self.add_material_type(MaterialType {

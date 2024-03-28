@@ -1,3 +1,6 @@
+
+use std::ops::Range;
+
 use ash::{prelude::VkResult, vk::{self, StridedDeviceAddressRegionKHR}};
 use crate::{context::DeviceContext, pipeline::Pipeline, resource::UploadBuffer, util};
 
@@ -23,7 +26,7 @@ impl AlignmentInfo {
     }
 
     fn aligned_size_of_entry(&self, entry: &Entry) -> u64 {
-        let entry_size = self.handle_size + entry.data_size as u64;
+        let entry_size = self.handle_size + entry.data_range.len() as u64;
         util::align_up(entry_size, self.handle_align)
     }
 
@@ -40,8 +43,21 @@ impl AlignmentInfo {
 
 struct Entry {
     shader_group: u32,
-    data_offset: usize,
-    data_size: usize,
+    data_range: Range<usize>,
+}
+
+impl Entry {
+    fn get_handle<'a>(&self, align_info: AlignmentInfo, handle_data: &'a [u8]) -> &'a [u8] {
+        
+        let begin = self.shader_group as usize * align_info.handle_size as usize;
+        let end = (self.shader_group + 1) as usize * align_info.handle_size as usize;
+
+        &handle_data[begin..end]
+    }
+
+    fn get_data<'a>(&self, data: &'a [u8]) -> &'a [u8] {
+        &data[self.data_range.clone()]
+    }
 }
 
 pub struct ShaderBindingTableDescription {
@@ -75,16 +91,16 @@ impl<'ctx> ShaderBindingTableDescription {
     }
 
     fn push_entry(&mut self, index: usize, shader_group: u32, data: &[u8]) {
-        let data_offset = self.data.len();
-        let data_size = data.len();
+        let data_start = self.data.len();
+        let data_end = data_start + data.len();
 
         self.data.extend(data);
 
-        self.entries[index].push(Entry { shader_group, data_offset, data_size });
+        self.entries[index].push(Entry { shader_group, data_range: data_start..data_end });
     }
 
-    pub unsafe fn build(&self, context: &'ctx DeviceContext, pipeline: &Pipeline<'ctx>) -> VkResult<ShaderBindingTable<'ctx>> {
-        
+    pub unsafe fn build(&self, context: &'ctx DeviceContext, handle_data: &[u8]) -> VkResult<ShaderBindingTable<'ctx>> {
+
         let align_info = AlignmentInfo::for_context(context);
 
         let mut strides = [0; 4];
@@ -115,13 +131,15 @@ impl<'ctx> ShaderBindingTableDescription {
         for (i, entries) in self.entries.iter().enumerate() {
             for (j, entry) in entries.iter().enumerate() {
                 
-                let entry_data = &self.data[entry.data_offset..entry.data_offset + entry.data_size];
+                let entry_handle = entry.get_handle(align_info, handle_data);
+                let entry_data = entry.get_data(&self.data);
                 
                 let handle_offset = offsets[i] as usize + j * strides[i] as usize;
                 let data_offset = handle_offset + align_info.handle_size as usize;
+ 
 
                 unsafe {
-                    buffer.write_u8_slice(pipeline.get_group_handle(entry.shader_group), handle_offset);
+                    buffer.write_u8_slice(entry_handle, handle_offset);
                     buffer.write_u8_slice(entry_data, data_offset)
                 }
             }
@@ -160,8 +178,6 @@ impl<'ctx> ShaderBindingTableDescription {
             },
         })
     }
-
-
 }
 
 pub struct ShaderBindingTable<'a> {
