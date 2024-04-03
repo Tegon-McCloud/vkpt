@@ -13,7 +13,7 @@ void main() {
     vec3 direction = gl_WorldRayDirectionEXT;
 
     vec2 uv = vec2(
-        atan(direction.x, direction.z) / (2.0 * pi) + 0.5,
+        atan(direction.x, direction.z) / (2.0 * pi),
         acos(direction.y) / pi
     );
 

@@ -28,11 +28,14 @@ void main() {
     if (inside) {
         ior_1 = ior;
         ior_2 = 1.0;
+
+        evaluation.wi = vec3(0.0);
+        return;
     }
     
     float ior_rel = ior_1 / ior_2;
 
-    vec3 wm = sampleNdfGgx(alpha, evaluation.rand_state);
+    vec3 wm = sampleNdfGgx(alpha_sq, evaluation.rand_state);
 
     if (wm.z < 1e-5) {
         evaluation.wi = vec3(0.0);
@@ -57,13 +60,14 @@ void main() {
     //     reflectance = reflectanceFresnel(abs(cos_theta_om), cos_theta_tm, ior_1, ior_2);
     // }
 
-    vec3 wi;
+    // vec3 wi;
 
-    if (rnd(evaluation.rand_state) < reflectance) {
-        wi = 2.0 * dot(wo, wm) * wm - wo;
-    } else {
-        // wi = (ior_rel * cos_theta_om - sign(wo.z) * cos_theta_tm) * wm - ior_rel * wo;
-    }
+    // if (rnd(evaluation.rand_state) < reflectance) {
+    //     wi = 2.0 * dot(wo, wm) * wm - wo;
+    // } else {
+    //     wi = (ior_rel * cos_theta_om - sign(wo.z) * cos_theta_tm) * wm - ior_rel * wo;
+    // }
+    vec3 wi = 2.0 * dot(wo, wm) * wm - wo;
 
     float cos_theta_im = dot(wi, wm);
     float cos_ratio_i = cos_theta_im / wi.z;
@@ -77,6 +81,6 @@ void main() {
 
     float geometry = maskingShadowingGgx(abs(wi.z), abs(wo.z), alpha_sq);
 
-    evaluation.weight = vec3(geometry * cos_factor);
+    evaluation.weight = vec3(geometry * reflectance * cos_factor);
     evaluation.wi = wi;
 }

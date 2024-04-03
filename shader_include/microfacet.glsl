@@ -4,14 +4,6 @@
 #include "../shader_include/definitions.glsl"
 #include "../shader_include/random.glsl"
 
-float geometryGgx(float cos_theta, float alpha_sq) {
-    return 2.0 * cos_theta / (cos_theta + sqrt(alpha_sq + (1.0 - alpha_sq) * cos_theta * cos_theta));
-}
-
-float maskingShadowingGgx(float cos_theta_i, float cos_theta_o, float alpha_sq) {
-    return geometryGgx(cos_theta_i, alpha_sq) * geometryGgx(cos_theta_o, alpha_sq);
-}
-
 float ndfGgx(float cos_theta_m, float alpha_sq) {
     float denom = cos_theta_m * cos_theta_m * (alpha_sq - 1.0) + 1.0;
 
@@ -48,44 +40,20 @@ vec3 sampleVndfGgx(vec3 w, float alpha, inout uint rand_state) {
     return normalize(vec3(wm_std.xy * alpha, wm_std.z));
 }
 
-// float smithLambdaGgx() {
-    
-// }
+float lambdaGgx(float cos_theta, float alpha_sq) {
+    float cos_theta_sq = cos_theta * cos_theta;
+    float sin_theta_sq = max(1.0 - cos_theta_sq, 0.0);
+    float tan_theta_sq = sin_theta_sq / cos_theta_sq;
 
-// float sampleHeight(float prevHeight, vec3 w, out leave, inout uint rand_state) {
+    return 0.5 * (sign(cos_theta) * sqrt(1.0 + alpha_sq * tan_theta_sq) - 1.0);
+}
 
-//     float u = rnd(rand_state);
+float geometryGgx(float cos_theta, float alpha_sq) {
+    return 1.0 / (1.0 + lambdaGgx(cos_theta, alpha_sq));
+}
 
-//     if u <
-
-
-// }
-
-// vec3 ggxRandomWalk(vec3 wi) {
-//     float height = 1e8;
-//     float energy = 1.0;
-
-//     vec3 w = -wi;
-    
-//     while(true) {
-
-//     }
-
-
-
-// }
-
-
-float reflectanceFresnel(float cos_theta_i, float cos_theta_t, float ior_i, float ior_t) {
-    float a_ii = ior_i * cos_theta_i;
-    float a_tt = ior_t * cos_theta_t;
-    float a_it = ior_i * cos_theta_t;
-    float a_ti = ior_t * cos_theta_i;
-
-    float r_perp = (a_ii - a_tt) / (a_ii + a_tt);
-    float r_para = (a_ti - a_it) / (a_ti + a_it);
-
-    return 0.5 * ((r_perp * r_perp) + (r_para * r_para));
+float maskingShadowingGgx(float cos_theta_i, float cos_theta_o, float alpha_sq) {
+    return 1.0 / (1.0 + lambdaGgx(cos_theta_i, alpha_sq) + lambdaGgx(cos_theta_o, alpha_sq));
 }
 
 #endif

@@ -29,6 +29,10 @@ float rnd(inout uint rand_state) {
     return float(rand_state) / float(0x80000000u);
 }
 
+float sampleExponential(float rate, inout uint rand_state) {
+    return -log(1.0 - rnd(rand_state)) / rate;
+}
+
 vec3 sampleCosineHemisphere(inout uint rand_state) {
     float cosTheta = sqrt(rnd(rand_state));
     float sinTheta = sqrt(1.0 - cosTheta * cosTheta);

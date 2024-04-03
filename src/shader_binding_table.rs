@@ -2,7 +2,7 @@
 use std::ops::Range;
 
 use ash::{prelude::VkResult, vk::{self, StridedDeviceAddressRegionKHR}};
-use crate::{context::DeviceContext, pipeline::Pipeline, resource::UploadBuffer, util};
+use crate::{context::DeviceContext, resource::UploadBuffer, util};
 
 // struct PipelineReference {
 //     pipeline: vk::Pipeline,

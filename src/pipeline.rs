@@ -260,11 +260,6 @@ impl<'ctx> Pipeline<'ctx> {
     pub fn layout(&self) -> vk::PipelineLayout {
         self.layout
     }
-
-    fn handle_stride(&self) -> usize {
-        self.context.physical_device().ray_tracing_pipeline_properties.shader_group_handle_size as usize
-    } 
-
 }
 
 impl<'a> Drop for Pipeline<'a> {

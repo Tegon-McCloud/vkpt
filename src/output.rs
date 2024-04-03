@@ -7,6 +7,7 @@ pub trait Output<'ctx> {
 }
 
 pub struct OutputImage<'ctx> {
+    #[allow(unused)]
     image: Image<'ctx>,
     view: ImageView<'ctx>,
 }

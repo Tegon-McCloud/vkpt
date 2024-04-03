@@ -10,14 +10,12 @@ use context::DeviceContext;
 use nalgebra::{Matrix3, Point3};
 use pipeline::Pipeline;
 use resource::{Image, ImageView, ReadBackBuffer, UploadBuffer};
-use scene::SceneDescriptorSet;
 
 use crate::{pipeline::{ResourceLayout, ShaderData}, scene::{camera::Camera, light::Environment, Scene}, shader_binding_table::ShaderBindingTableDescription, util::as_u8_slice};
 
 pub mod util;
 pub mod context;
 pub mod resource;
-pub mod descriptor;
 pub mod pipeline;
 pub mod shader_binding_table;
 pub mod scene;
@@ -385,8 +383,8 @@ fn main() {
         // scene.set_environment(Environment::constant(&context).unwrap());
 
         let environment_map = load_environment_map(&context).unwrap();
-
         let environment_map_handle = scene.add_texture(environment_map);
+        
         scene.set_environment(Environment::spherical(&context, environment_map_handle).unwrap());
         
         let readback_buffer = ReadBackBuffer::new(

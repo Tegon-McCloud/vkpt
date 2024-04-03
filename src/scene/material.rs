@@ -1,5 +1,3 @@
-use nalgebra::Vector3;
-
 use crate::pipeline::Shader;
 
 use super::MaterialTypeHandle;

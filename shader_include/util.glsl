@@ -13,5 +13,22 @@ mat3 getTbnMatrix(vec3 normal) {
     );
 }
 
+float reflectanceSchlick(float r0, float cos_theta) {
+    float a = 1.0 - cos_theta;
+    return r0 + (1.0 - r0) * (a * a) * (a * a) * a;
+}
+
+float reflectanceFresnel(float cos_theta_i, float cos_theta_t, float ior_i, float ior_t) {
+    float a_ii = ior_i * cos_theta_i;
+    float a_tt = ior_t * cos_theta_t;
+    float a_it = ior_i * cos_theta_t;
+    float a_ti = ior_t * cos_theta_i;
+
+    float r_perp = (a_ii - a_tt) / (a_ii + a_tt);
+    float r_para = (a_ti - a_it) / (a_ti + a_it);
+
+    return 0.5 * ((r_perp * r_perp) + (r_para * r_para));
+}
+
 
 #endif

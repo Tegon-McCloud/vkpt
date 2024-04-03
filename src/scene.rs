@@ -1,10 +1,15 @@
 use std::{ffi::CStr, ops::Range, path::Path};
 
 use ash::{vk, prelude::VkResult};
-use gltf::json::extensions::texture;
 use nalgebra::{Matrix3x4, Matrix4};
 
-use crate::{context::DeviceContext, pipeline::{Shader, ShaderData, ShaderGroup}, resource::{DeviceBuffer, Image, ImageView, UploadBuffer}, shader_binding_table::ShaderBindingTableDescription, util::{self, as_u8_slice}};
+use crate::{
+    context::DeviceContext,
+    pipeline::{Shader, ShaderData, ShaderGroup},
+    resource::{DeviceBuffer, Image, ImageView, UploadBuffer},
+    shader_binding_table::ShaderBindingTableDescription,
+    util::{self, as_u8_slice},
+};
 
 use self::{camera::Camera, light::{LightSource, Environment}, material::{Material, MaterialType}, mesh::Mesh};
 
@@ -504,6 +509,7 @@ pub struct SceneDescriptorSet<'ctx, 'a> {
     tlas_buffer: DeviceBuffer<'ctx>,
     tlas: vk::AccelerationStructureKHR,
 
+    #[allow(unused)]
     texture_views: Vec<ImageView<'ctx>>,
 
     layout: vk::DescriptorSetLayout,
@@ -595,7 +601,7 @@ impl<'ctx> Scene<'ctx> {
 
         let default_material = self.add_material(Material {
             ior: 1.54,
-            roughness: 0.1,
+            roughness: 0.01,
             material_type,
         });
 
