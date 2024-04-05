@@ -55,30 +55,33 @@ void main() {
     float alpha = roughness;    
     float alpha_sq = alpha * alpha;
 
-    bool outside = evaluation.wo.z > 0.0;    
-    bool started_outside = outside;
-
-    
-    float ior_rel;
-
-    if (outside) {
-        ior_rel = 1.0 / ior;
-    } else {
-        ior_rel = ior;
-    }
+    float ior_rel = 1.0 / ior;
 
     vec3 w = -evaluation.wo;
     float height = 0.0;
     float weight = 1.0;
+
+    bool outside = evaluation.wo.z > 0.0;    
+    bool started_outside = outside;
+
+    if (!outside) {
+        ior = 1.0 / ior;
+        w.z = -w.z;
+    }
 
     for(int i = 0; i < 8; i++) {
 
         float extinction = lambdaGgx(w.z, alpha_sq) * w.z;
         float dist = sampleExponential(extinction, evaluation.rand_state);
 
-        height += (outside ? 1.0 : -1.0) * w.z * dist;
+        height += w.z * dist;
 
         if(height > 0.0) {
+
+            if(outside != started_outside) {
+                w.z = -w.z;
+            }
+
             evaluation.wi = w;
 
             evaluation.weight = vec3(weight);
@@ -94,6 +97,8 @@ void main() {
 
             float xi = invHeightCdfUniform(exp(height));
             height = log(heightCdfUniform(-xi));
+
+            w.z = -w.z;
         }
     }
 

@@ -66,9 +66,8 @@ void main() {
     }
 
     float cos_theta_im = dot(wi, wm);
-    float cos_ratio_i = cos_theta_im / wi.z;
-
-    if (cos_ratio_i < 0.0) {
+    
+    if (cos_theta_im * wi.z < 0.0) {
         evaluation.wi = vec3(0.0);
         return;
     }
