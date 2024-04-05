@@ -76,14 +76,10 @@ void main() {
         float extinction = lambdaGgx(w.z, alpha_sq) * w.z;
         float dist = sampleExponential(extinction, evaluation.rand_state);
 
-        height += w.z * dist;
+        height += (outside ? 1.0 : -1.0) * w.z * dist;
 
         if(height > 0.0) {
             evaluation.wi = w;
-
-            if(outside != started_outside) {
-                evaluation.wi.z = -evaluation.wi.z;
-            }
 
             evaluation.weight = vec3(weight);
             return;
@@ -98,8 +94,6 @@ void main() {
 
             float xi = invHeightCdfUniform(exp(height));
             height = log(heightCdfUniform(-xi));
-
-            w.z = -w.z;
         }
     }
 

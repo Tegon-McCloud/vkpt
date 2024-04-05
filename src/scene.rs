@@ -601,7 +601,7 @@ impl<'ctx> Scene<'ctx> {
 
         let default_material = self.add_material(Material {
             ior: 1.54,
-            roughness: 0.001,
+            roughness: 0.01,
             material_type,
         });
 
