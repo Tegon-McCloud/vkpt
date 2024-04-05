@@ -75,12 +75,12 @@ void main() {
     vec3 n2 = normals.arr[face.z].xyz;
 
     vec3 normal = normalize(gl_ObjectToWorldEXT * vec4(bc.x * n0 + bc.y * n1 + bc.z * n2, 0.0));
-
+    
     // local coordinate system from normal
     mat3 tangent_to_world = getTbnMatrix(normal);
     mat3 world_to_tangent = transpose(tangent_to_world);
     
-    vec3 wo = -world_to_tangent * gl_WorldRayDirectionEXT;
+    vec3 wo = -(world_to_tangent * gl_WorldRayDirectionEXT);
 
     // vec3 light_dir = world_to_tangent * normalize(vec3(-1.0, -1.0, -1.0));
 

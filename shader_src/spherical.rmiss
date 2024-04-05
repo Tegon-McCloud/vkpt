@@ -20,6 +20,8 @@ void main() {
     uvec4 env_rgbe = texture(environment_map, uv);
     vec3 env_radiance = (1.0 / 256.0) * vec3(env_rgbe.rgb) * pow(2.0, float(env_rgbe.a) - 128.0);
     
+    env_radiance /= 4.0;
+
     payload.radiance += payload.weight * env_radiance;
     payload.depth = max_depth; // end the path
 

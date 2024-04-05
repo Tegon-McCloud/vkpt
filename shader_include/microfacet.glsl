@@ -26,16 +26,18 @@ vec3 sampleNdfGgx(float alpha_sq, inout uint rand_state) {
 }
 
 vec3 sampleVndfGgx(vec3 w, float alpha, inout uint rand_state) {
-    vec3 wi_std = normalize(vec3(w.xy * alpha, w.z));
+
+    vec3 w_std = normalize(vec3(w.xy * alpha, w.z));
 
     float phi = 2.0 * pi * rnd(rand_state);
 
-    float z = (1.0 - rnd(rand_state)) * (1.0 + w.z) - w.z;
+    float z = (1.0 - rnd(rand_state)) * (1.0 + w_std.z) - w_std.z;
     float sin_theta = sqrt(max(1.0 - z * z, 0.0));
     float x = sin_theta * cos(phi);
     float y = sin_theta * sin(phi);
 
-    vec3 wm_std = w + vec3(x, y, z);
+    // unnormalized!
+    vec3 wm_std = w_std + vec3(x, y, z);
 
     return normalize(vec3(wm_std.xy * alpha, wm_std.z));
 }
@@ -54,6 +56,14 @@ float geometryGgx(float cos_theta, float alpha_sq) {
 
 float maskingShadowingGgx(float cos_theta_i, float cos_theta_o, float alpha_sq) {
     return 1.0 / (1.0 + lambdaGgx(cos_theta_i, alpha_sq) + lambdaGgx(cos_theta_o, alpha_sq));
+}
+
+float heightCdfUniform(float height) {
+    return clamp(0.0, 1.0, 0.5 * (height + 1.0));
+}
+
+float invHeightCdfUniform(float u) {
+    return clamp(2.0 * u - 1.0, -1.0, 1.0);
 }
 
 #endif

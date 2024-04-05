@@ -589,7 +589,7 @@ impl<'ctx> Scene<'ctx> {
     
             let sample_shader = Shader::new(
                 &self.context,
-                "shader_bin/microfacet_sample.rcall.spv",
+                "shader_bin/multiscatter_sample.rcall.spv",
                 entry_point_name.to_owned(),
             )?;
             
@@ -601,7 +601,7 @@ impl<'ctx> Scene<'ctx> {
 
         let default_material = self.add_material(Material {
             ior: 1.54,
-            roughness: 0.01,
+            roughness: 0.001,
             material_type,
         });
 

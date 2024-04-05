@@ -15,9 +15,57 @@ layout(shaderRecordEXT, std430) buffer sbtData {
 
 layout(location = 0) callableDataInEXT brdfEvaluation evaluation;
 
+vec3 sampleDielectricPhaseFunction(vec3 wo, inout float weight, float alpha, float ior_rel, bool outside, out bool transmitted) {
+
+    vec3 wm;
+
+    if (outside) {
+        wm = sampleVndfGgx(wo, alpha, evaluation.rand_state);
+    } else {
+        wm = sampleVndfGgx(-wo, alpha, evaluation.rand_state);
+    }
+
+    float cos_theta_om = dot(wo, wm);
+
+    float reflectance = 1.0;
+
+    float sin_theta_tm_sq = ior_rel * ior_rel * (1.0 - cos_theta_om * cos_theta_om);
+    float cos_theta_tm;
+
+    if (sin_theta_tm_sq < 1.0) {
+        cos_theta_tm = sqrt(1.0 - sin_theta_tm_sq);
+        reflectance = reflectanceFresnel(abs(cos_theta_om), cos_theta_tm, ior_rel, 1.0);
+    }
+
+    vec3 wi;
+
+    if (rnd(evaluation.rand_state) < reflectance) {
+        wi = 2.0 * dot(wo, wm) * wm - wo;
+        transmitted = false;
+    } else {
+        wi = (ior_rel * cos_theta_om - sign(wo.z) * cos_theta_tm) * wm - ior_rel * wo;
+        transmitted = true;
+    }
+    
+    return wi;
+}
+
 void main() {
+
     float alpha = roughness;    
     float alpha_sq = alpha * alpha;
+
+    bool outside = evaluation.wo.z > 0.0;    
+    bool started_outside = outside;
+
+    
+    float ior_rel;
+
+    if (outside) {
+        ior_rel = 1.0 / ior;
+    } else {
+        ior_rel = ior;
+    }
 
     vec3 w = -evaluation.wo;
     float height = 0.0;
@@ -28,42 +76,31 @@ void main() {
         float extinction = lambdaGgx(w.z, alpha_sq) * w.z;
         float dist = sampleExponential(extinction, evaluation.rand_state);
 
-        // if (extinction < 0.0) {
-        //     evaluation.wi = vec3(0.0, 0.0, 1.0);
-        //     evaluation.weight = vec3(100.0, 0.0, 0.0);
-        //     return;
-        // }
-
         height += w.z * dist;
 
         if(height > 0.0) {
             evaluation.wi = w;
+
+            if(outside != started_outside) {
+                evaluation.wi.z = -evaluation.wi.z;
+            }
+
             evaluation.weight = vec3(weight);
             return;
         }
 
-        vec3 wm = sampleVndfGgx(-w, alpha, evaluation.rand_state);
-        
-        // if(dot(w, wm) > 1e-3) {
-        //     evaluation.wi = vec3(0.0, 0.0, 1.0);
-        //     evaluation.weight = vec3(100.0, 0.0, 0.0);
-        //     return;
-        // }
+        bool transmitted;
+        w = sampleDielectricPhaseFunction(-w, weight, alpha, ior_rel, outside, transmitted);
 
-        float cos_theta_im = dot(-w, wm);
+        if(transmitted) {
+            outside = !outside;
+            ior_rel = 1.0 / ior_rel;
 
-        w = w + 2.0 * cos_theta_im * wm;
+            float xi = invHeightCdfUniform(exp(height));
+            height = log(heightCdfUniform(-xi));
 
-        // if(abs(length(w) - 1.0) > 1e-5) {
-        //     evaluation.wi = vec3(0.0, 0.0, 1.0);
-        //     evaluation.weight = vec3(100.0, 0.0, 100.0);
-        //     return;
-        // }
-
-        extinction  = lambdaGgx(w.z, alpha_sq) * w.z;
-        dist = sampleExponential(extinction, evaluation.rand_state);
-
-        height += w.z * dist;
+            w.z = -w.z;
+        }
     }
 
     evaluation.wi = vec3(0.0);

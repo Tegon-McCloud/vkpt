@@ -197,7 +197,7 @@ unsafe fn render<'ctx>(context: &'ctx DeviceContext, scene: &Scene, image: &Imag
 
 fn load_environment_map<'ctx>(context: &'ctx DeviceContext) -> VkResult<Image<'ctx>> {
 
-    let host_image = image::io::Reader::open("resources/luxo_pxr_campus.hdr.png")
+    let host_image = image::io::Reader::open("resources/kloppenheim_06_4k.hdr.png")
         .expect("failed to read image")
         .decode()
         .expect("failed to decode image");
@@ -516,16 +516,9 @@ fn main() {
 
         readback_buffer.invalidate().unwrap();
         readback_buffer.read_slice(&mut img_raw_f32, 0);
-
-        println!("{:?}", &img_raw_f32[0..4]);
-        println!("{:?}", &img_raw_f32[img_raw_f32.len()-4..img_raw_f32.len()]);
-
-
-        // let px_idx = (img_height / 2 * img_width + img_width / 2) as usize;
-
-        // println!("{:?}", &img_raw_f32[4*px_idx..4*px_idx+4]);
-
+        
         let img_raw_u8 = img_raw_f32.iter()
+            .map(|lin| lin.powf(1.0 / 2.2))
             .map(|f| (f * 255.0).clamp(0.0, 255.0) as u8)
             .collect_vec();
 
