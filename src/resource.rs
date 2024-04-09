@@ -281,9 +281,9 @@ pub struct Image<'ctx> {
     allocation: gpu_allocator::vulkan::Allocation,
 }
 
-impl<'a> Image<'a> {
+impl<'ctx> Image<'ctx> {
 
-    pub fn new(context: &'a DeviceContext, create_info: &vk::ImageCreateInfo, location: gpu_allocator::MemoryLocation) -> VkResult<Self> {
+    pub fn new(context: &'ctx DeviceContext, create_info: &vk::ImageCreateInfo, location: gpu_allocator::MemoryLocation) -> VkResult<Self> {
 
         let inner = unsafe { context.device().create_image(&create_info, None)? };
 
@@ -312,6 +312,10 @@ impl<'a> Image<'a> {
             inner,
             allocation
         })
+    }
+
+    pub fn context(&self) -> &'ctx DeviceContext {
+        &self.context
     }
 
     pub fn resolution(&self) -> (u32, u32) {

@@ -140,9 +140,11 @@ impl<'ctx> Scene<'ctx> {
         self.environment = Some(environment);
     }
 
-    pub fn get_mesh(&self, mesh_id: usize) -> &Mesh<'ctx> {
-        &self.meshes[mesh_id]
+
+    pub fn set_instance_material(&mut self, instance_idx: usize, material: MaterialHandle) {
+        self.instances[instance_idx].material = material;
     }
+
 
     pub fn camera_data(&self) -> impl ShaderData {
         self.camera.serialize()
@@ -232,7 +234,7 @@ impl<'ctx> Scene<'ctx> {
 
         let texture_image_info = vk::DescriptorImageInfo::builder()
             .sampler(sampler)
-            .image_view(texture_views[0].inner())
+            .image_view(texture_views.get(0).map(|view| view.inner()).unwrap_or(vk::ImageView::null()))
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
             .build();
             
@@ -261,6 +263,7 @@ impl<'ctx> Scene<'ctx> {
             tlas,
 
             texture_views,
+            sampler,
 
             layout,
 
@@ -512,6 +515,8 @@ pub struct SceneDescriptorSet<'ctx, 'a> {
     #[allow(unused)]
     texture_views: Vec<ImageView<'ctx>>,
 
+    sampler: vk::Sampler,
+
     layout: vk::DescriptorSetLayout,
 
     descriptor_pool: vk::DescriptorPool,
@@ -540,6 +545,7 @@ impl<'ctx> SceneDescriptorSet<'ctx, '_> {
 impl<'ctx, 'a> Drop for SceneDescriptorSet<'ctx, 'a> {
     fn drop(&mut self) {
         unsafe {
+            self.context().device().destroy_sampler(self.sampler, None);
             self.context().extensions().acceleration_structure.destroy_acceleration_structure(self.tlas, None);
             self.context().device().destroy_descriptor_pool(self.descriptor_pool, None);
             self.context().device().destroy_descriptor_set_layout(self.layout, None);
@@ -548,7 +554,7 @@ impl<'ctx, 'a> Drop for SceneDescriptorSet<'ctx, 'a> {
 }
 
 impl<'ctx> Scene<'ctx> {
-    pub fn load<P: AsRef<Path>>(&mut self, path: P, context: &'ctx DeviceContext) -> VkResult<()> {
+    pub fn load<P: AsRef<Path>>(&mut self, path: P, context: &'ctx DeviceContext, default_material: Option<MaterialHandle>) -> VkResult<()> {
         let (document, buffers, _images) = gltf::import(path).expect("failed to import scene");
     
         let mut primitive_ids = Vec::new();
@@ -589,7 +595,7 @@ impl<'ctx> Scene<'ctx> {
     
             let sample_shader = Shader::new(
                 &self.context,
-                "shader_bin/multiscatter_sample.rcall.spv",
+                "shader_bin/ms_heitz_sample.rcall.spv",
                 entry_point_name.to_owned(),
             )?;
             
@@ -599,12 +605,14 @@ impl<'ctx> Scene<'ctx> {
             })
         };
 
-        let default_material = self.add_material(Material {
-            ior: 1.54,
-            roughness: 0.01,
-            material_type,
-        });
-
+        let default_material = default_material.unwrap_or_else(||
+            self.add_material(Material {
+                ior: 1.54,
+                roughness: 0.5,
+                material_type,
+            })
+        );
+        
         let mut material_handles = Vec::new();
 
         for material in document.materials() {

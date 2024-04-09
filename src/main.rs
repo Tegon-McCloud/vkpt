@@ -2,14 +2,19 @@
 #![feature(int_roundings)]
 #![feature(once_cell_try)]
 
+use core::ffi;
+use std::{fs, path::PathBuf};
+
 use ash::{prelude::VkResult, vk};
 use gpu_allocator::MemoryLocation;
 use itertools::Itertools;
 
 use context::DeviceContext;
 use nalgebra::{Matrix3, Point3};
-use pipeline::Pipeline;
+use pipeline::{Pipeline, Shader};
 use resource::{Image, ImageView, ReadBackBuffer, UploadBuffer};
+use scene::material::{Material, MaterialType};
+use winit::event;
 
 use crate::{pipeline::{ResourceLayout, ShaderData}, scene::{camera::Camera, light::Environment, Scene}, shader_binding_table::ShaderBindingTableDescription, util::as_u8_slice};
 
@@ -43,10 +48,155 @@ impl<'ctx> SampleTarget<'ctx> {
 
         let image = Image::new(context, &image_info, gpu_allocator::MemoryLocation::GpuOnly)?;
 
+        unsafe {
+            context.execute_commands(|cmd_buffer| {
+                { // transition image to GENERAL
+                    let image_barrier = vk::ImageMemoryBarrier2::builder()
+                        .src_stage_mask(vk::PipelineStageFlags2::NONE)
+                        .src_access_mask(vk::AccessFlags2::NONE)
+                        .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+                        .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                        .old_layout(vk::ImageLayout::UNDEFINED)
+                        .new_layout(vk::ImageLayout::GENERAL)
+                        .image(image.inner())
+                        .subresource_range(vk::ImageSubresourceRange {
+                            aspect_mask: vk::ImageAspectFlags::COLOR,
+                            base_mip_level: 0,
+                            level_count: 1,
+                            base_array_layer: 0,
+                            layer_count: 1,
+                        })
+                        .build();
+    
+                    let dependency_info = vk::DependencyInfo::builder()
+                        .image_memory_barriers(std::slice::from_ref(&image_barrier));
+    
+                    context.device().cmd_pipeline_barrier2(cmd_buffer, &dependency_info);
+                }
+            })?;
+        }
+        
         Ok(Self {
             context,
             image,
         })
+    }
+
+    pub fn download(&self) -> VkResult<Vec<f32>> {
+        
+        let (width, height) = self.image.resolution();
+
+        let read_back_buffer = ReadBackBuffer::new(
+            &self.image.context(),
+            std::mem::size_of::<f32>() as u64 * 4 * width as u64 * height as u64,
+            vk::BufferUsageFlags::TRANSFER_DST
+        ).unwrap();
+
+        unsafe {
+            self.context().execute_commands(|cmd_buffer| {
+                { // transition image to TRANSFER_SRC
+                    let copy_barrier = vk::ImageMemoryBarrier2::builder()
+                        .src_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+                        .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                        .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                        .dst_access_mask(vk::AccessFlags2::TRANSFER_READ)
+                        .old_layout(vk::ImageLayout::GENERAL)
+                        .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                        .image(self.image.inner())
+                        .subresource_range(vk::ImageSubresourceRange {
+                            aspect_mask: vk::ImageAspectFlags::COLOR,
+                            base_mip_level: 0,
+                            level_count: 1,
+                            base_array_layer: 0,
+                            layer_count: 1,
+                        })
+                        .build();
+    
+                    let dependency_info = vk::DependencyInfo::builder()
+                        .image_memory_barriers(std::slice::from_ref(&copy_barrier));
+    
+                    self.context().device().cmd_pipeline_barrier2(cmd_buffer, &dependency_info);
+                }
+    
+                { // copy image to buffer
+                    let copy_region = vk::BufferImageCopy2::builder()
+                        .buffer_offset(0)
+                        .image_subresource(vk::ImageSubresourceLayers {
+                            aspect_mask: vk::ImageAspectFlags::COLOR,
+                            mip_level: 0,
+                            base_array_layer: 0,
+                            layer_count: 1,
+                        })
+                        .image_offset(vk::Offset3D {
+                            x: 0,
+                            y: 0,
+                            z: 0,
+                        })
+                        .image_extent(vk::Extent3D {
+                            width,
+                            height,
+                            depth: 1,
+                        });
+                    
+                    let copy_info = vk::CopyImageToBufferInfo2::builder()
+                        .src_image(self.image.inner())
+                        .src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                        .dst_buffer(read_back_buffer.handle())
+                        .regions(std::slice::from_ref(&copy_region));
+    
+                    self.context().device().cmd_copy_image_to_buffer2(cmd_buffer, &copy_info);
+                }
+    
+                { // barrier to prevent reading from buffer until transfer has finished
+                    let buffer_barrier = vk::BufferMemoryBarrier2::builder()
+                        .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                        .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                        .dst_stage_mask(vk::PipelineStageFlags2::HOST)
+                        .dst_access_mask(vk::AccessFlags2::HOST_READ)
+                        .buffer(read_back_buffer.handle())
+                        .offset(0)
+                        .size(vk::WHOLE_SIZE)
+                        .build();
+
+                    // transfer image back to shad
+                    let image_barrier = vk::ImageMemoryBarrier2::builder()
+                        .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                        .src_access_mask(vk::AccessFlags2::TRANSFER_READ)
+                        .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+                        .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                        .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                        .new_layout(vk::ImageLayout::GENERAL)
+                        .image(self.image.inner())
+                        .subresource_range(vk::ImageSubresourceRange {
+                            aspect_mask: vk::ImageAspectFlags::COLOR,
+                            base_mip_level: 0,
+                            level_count: 1,
+                            base_array_layer: 0,
+                            layer_count: 1,
+                        })
+                        .build();
+
+
+                    let dependency_info = vk::DependencyInfo::builder()
+                        .dependency_flags(vk::DependencyFlags::empty())
+                        .buffer_memory_barriers(std::slice::from_ref(&buffer_barrier))
+                        .image_memory_barriers(std::slice::from_ref(&image_barrier));
+    
+                    self.context().device().cmd_pipeline_barrier2(cmd_buffer, &dependency_info);
+                }
+            })?;
+            
+            let mut img_raw_f32 = vec![0.0f32; (4 * width * height) as usize];
+
+            read_back_buffer.invalidate()?;
+            read_back_buffer.read_slice(&mut img_raw_f32, 0);
+            
+            Ok(img_raw_f32)
+        }
+    }
+
+    pub fn context(&self) -> &'ctx DeviceContext {
+        self.image.context()
     }
 }
 
@@ -190,8 +340,6 @@ unsafe fn render<'ctx>(context: &'ctx DeviceContext, scene: &Scene, image: &Imag
     context.device().destroy_semaphore(semaphore, None);
     context.device().destroy_command_pool(cmd_pool, None);
 
-
-
     Ok(())
 }
 
@@ -232,8 +380,6 @@ fn load_environment_map<'ctx>(context: &'ctx DeviceContext) -> VkResult<Image<'c
         buffer.flush()?;
 
         context.execute_commands(|cmd_buffer| {
-
-
             // transition image to transfer destination
             let image_barrier = vk::ImageMemoryBarrier2::builder()
                 .src_stage_mask(vk::PipelineStageFlags2::NONE)
@@ -357,173 +503,229 @@ fn load_environment_map<'ctx>(context: &'ctx DeviceContext) -> VkResult<Image<'c
 //     get_camera(reference)
 // }
 
+fn load_material_type<'ctx>(context: &'ctx DeviceContext, eval_shader_file: &str, sample_shader_file: &str) -> VkResult<MaterialType<'ctx>> {
+    unsafe {
+        let entry_point_name = ffi::CStr::from_bytes_with_nul_unchecked(b"main\0").to_owned();
+
+        let evaluation_shader = Shader::new(
+            context,
+            eval_shader_file,
+            entry_point_name.to_owned(),
+        )?;
+    
+        let sample_shader = Shader::new(
+            context,
+            sample_shader_file,
+            entry_point_name.to_owned(),
+        )?;
+
+        Ok(MaterialType {
+            evaluation_shader,
+            sample_shader,
+        })
+    }
+}
+
+fn run_furnace_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
+    
+    let img_width = 512;
+    let img_height = 512;
+    let save_path = "./images/furnace";
+
+    fs::create_dir_all(save_path).unwrap();
+
+    let camera = Camera::new(
+        Point3::new(0.0, 0.0, 5.0),
+        Matrix3::new(
+            1.0, 0.0, -0.5,
+            0.0, -1.0, 0.5,
+            0.0, 0.0, -1.0,
+        )
+    );
+    let sample_target = SampleTarget::new(context, img_width, img_height).unwrap();
+
+    let mut scene = Scene::new(context);
+
+    scene.load("./resources/sphere.gltf", context, None)?;
+    
+    scene.set_camera(camera);
+    scene.set_environment(Environment::constant(context)?);
+
+    let material_types = [
+        ("ss_ndf", "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ss_ndf_sample.rcall.spv"),
+        ("ss_vndf", "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ss_vndf_sample.rcall.spv"),
+        ("ms_heitz", "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ms_heitz_sample.rcall.spv"),
+        ("ms_dupuy", "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ms_dupuy_sample.rcall.spv"),
+    ];
+    
+    let roughnesses = [
+        0.01, 0.1, 1.0,
+    ];
+
+    let mut materials = vec![];
+
+    for material_type in material_types {
+
+        let material_type_handle = scene.add_material_type(load_material_type(context, material_type.1, material_type.2)?);
+
+        for roughness in roughnesses {
+
+            let material_handle = scene.add_material(Material {
+                ior: 1.54,
+                roughness,
+                material_type: material_type_handle,
+            });
+            
+            let file_path = format!("{}/{}_r{}.png", save_path, material_type.0, (100.0 * roughness).round() as u32);
+
+            materials.push((file_path, material_handle));
+        }
+    }
+    unsafe {    
+        for material in materials {
+    
+            scene.set_instance_material(0, material.1);
+    
+            render(context, &scene, &sample_target.image)?;
+            
+            let img_data = sample_target.download()?;
+
+            let img_data_u8 = img_data.iter()
+                .map(|lin| lin.powf(1.0 / 2.2))
+                .map(|f| (f * 255.0).clamp(0.0, 255.0) as u8)
+                .collect_vec();
+
+            let img = image::RgbaImage::from_vec(img_width, img_height, img_data_u8).unwrap();
+
+            img.save(material.0).unwrap();
+        }
+    }
+    Ok(())
+}
+
+fn run_refraction_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
+
+    let img_width = 512;
+    let img_height = 512;
+    let save_path = "./images/refract";
+
+    fs::create_dir_all(save_path).unwrap();
+
+    let environment_map = load_environment_map(&context).unwrap();
+    let camera = Camera::new(
+        Point3::new(0.0, 0.0, 5.0),
+        Matrix3::new(
+            1.0, 0.0, -0.5,
+            0.0, -1.0, 0.5,
+            0.0, 0.0, -1.0,
+        )
+    );
+    let sample_target = SampleTarget::new(&context, img_width, img_height).unwrap();
+
+    let mut scene = Scene::new(&context);
+
+    scene.load("./resources/sphere.gltf", &context, None)?;
+    
+    scene.set_camera(camera);
+    let environment_map_handle = scene.add_texture(environment_map);
+    scene.set_environment(Environment::spherical(context, environment_map_handle)?);
+
+    let material_types = [
+        ("ss_ndf", "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ss_ndf_sample.rcall.spv"),
+        ("ss_vndf", "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ss_vndf_sample.rcall.spv"),
+        ("ms_heitz", "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ms_heitz_sample.rcall.spv"),
+        ("ms_dupuy", "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ms_dupuy_sample.rcall.spv"),
+    ];
+    
+    let roughnesses = [
+        0.01, 0.1, 1.0,
+    ];
+
+    let mut materials = vec![];
+
+    for material_type in material_types {
+
+        let material_type_handle = scene.add_material_type(load_material_type(context, material_type.1, material_type.2)?);
+
+        for roughness in roughnesses {
+
+            let material_handle = scene.add_material(Material {
+                ior: 1.54,
+                roughness,
+                material_type: material_type_handle,
+            });
+            
+            let file_name = format!("{}/{}_r{}.png", save_path, material_type.0, (100.0 * roughness).round() as u32);
+
+            materials.push((file_name, material_handle));
+        }
+    }
+    unsafe {    
+        for material in materials {
+    
+            scene.set_instance_material(0, material.1);
+    
+            render(context, &scene, &sample_target.image)?;
+            
+            let img_data = sample_target.download()?;
+
+            let img_data_u8 = img_data.iter()
+                .map(|lin| lin.powf(1.0 / 2.2))
+                .map(|f| (f * 255.0).clamp(0.0, 255.0) as u8)
+                .collect_vec();
+
+            let img = image::RgbaImage::from_vec(img_width, img_height, img_data_u8).unwrap();
+
+            img.save(material.0).unwrap();
+        }
+    }
+    Ok(())
+}
+
 fn main() {
 
-    unsafe {
-        let context = DeviceContext::new().expect("failed to create device context");
+    let context = DeviceContext::new().expect("failed to create device context");
 
-        let img_width = 512;
-        let img_height = 512;
+    run_refraction_tests(&context).unwrap();
+    run_furnace_tests(&context).unwrap();
+
+    // unsafe {
+
+    //     let img_width = 512;
+    //     let img_height = 512;
     
-        let sample_target = SampleTarget::new(&context, img_width, img_height).unwrap();
+    //     let sample_target = SampleTarget::new(&context, img_width, img_height).unwrap();
 
-        let mut scene = Scene::new(&context);
-        scene.load("./resources/sphere.gltf", &context).unwrap();
+    //     let mut scene = Scene::new(&context);
+    //     scene.load("./resources/sphere.gltf", &context, None).unwrap();
 
-        let camera = Camera::new(
-            Point3::new(0.0, 0.0, 5.0),
-            Matrix3::new(
-                1.0, 0.0, -0.5,
-                0.0, -1.0, 0.5,
-                0.0, 0.0, -1.0,
-            )
-        );
+    //     let camera = Camera::new(
+    //         Point3::new(0.0, 0.0, 5.0),
+    //         Matrix3::new(
+    //             1.0, 0.0, -0.5,
+    //             0.0, -1.0, 0.5,
+    //             0.0, 0.0, -1.0,
+    //         )
+    //     );
 
-        scene.set_camera(camera);
-        // scene.set_environment(Environment::constant(&context).unwrap());
+    //     scene.set_camera(camera);
+    //     // scene.set_environment(Environment::constant(&context).unwrap());
 
-        let environment_map = load_environment_map(&context).unwrap();
-        let environment_map_handle = scene.add_texture(environment_map);
+    //     let environment_map = load_environment_map(&context).unwrap();
+    //     let environment_map_handle = scene.add_texture(environment_map);
         
-        scene.set_environment(Environment::spherical(&context, environment_map_handle).unwrap());
-        
-        let readback_buffer = ReadBackBuffer::new(
-            &context,
-            std::mem::size_of::<f32>() as u64 * 4 * img_width as u64 * img_height as u64,
-            vk::BufferUsageFlags::TRANSFER_DST
-        ).unwrap();
-        
-        context.execute_commands(|cmd_buffer| {
-            { // transition image to GENERAL
-                let image_barrier = vk::ImageMemoryBarrier2::builder()
-                    .src_stage_mask(vk::PipelineStageFlags2::NONE)
-                    .src_access_mask(vk::AccessFlags2::NONE)
-                    .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
-                    .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
-                    .old_layout(vk::ImageLayout::UNDEFINED)
-                    .new_layout(vk::ImageLayout::GENERAL)
-                    .image(sample_target.image.inner())
-                    .subresource_range(vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        base_mip_level: 0,
-                        level_count: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    })
-                    .build();
+    //     scene.set_environment(Environment::spherical(&context, environment_map_handle).unwrap());
 
-                let dependency_info = vk::DependencyInfo::builder()
-                    .image_memory_barriers(std::slice::from_ref(&image_barrier));
+    //     render(&context, &scene, &sample_target.image).unwrap();
+    //     let img_raw_f32 = sample_target.download().unwrap();
 
-                context.device().cmd_pipeline_barrier2(cmd_buffer, &dependency_info);
+    //     let img_raw_u8 = img_raw_f32.iter()
+    //         .map(|lin| lin.powf(1.0 / 2.2))
+    //         .map(|f| (f * 255.0).clamp(0.0, 255.0) as u8)
+    //         .collect_vec();
 
-                context.device().cmd_clear_color_image(
-                    cmd_buffer,
-                    sample_target.image.inner(),
-                    vk::ImageLayout::GENERAL,
-                    &vk::ClearColorValue {
-                        float32: [0.0, 0.0, 0.0, 1.0],
-                    },
-                    &[vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        base_mip_level: 0,
-                        level_count: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    }],
-                );
+    //     let img = image::RgbaImage::from_vec(img_width, img_height, img_raw_u8).unwrap();
 
-            }
-        }).unwrap();
-
-        render(&context, &scene, &sample_target.image).unwrap();
-        
-        context.execute_commands(|cmd_buffer| {
-            { // transition image to TRANSFER_SRC
-                let copy_barrier = vk::ImageMemoryBarrier2::builder()
-                    .src_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
-                    .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
-                    .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                    .dst_access_mask(vk::AccessFlags2::TRANSFER_READ)
-                    .old_layout(vk::ImageLayout::GENERAL)
-                    .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                    .image(sample_target.image.inner())
-                    .subresource_range(vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        base_mip_level: 0,
-                        level_count: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    })
-                    .build();
-
-                let dependency_info = vk::DependencyInfo::builder()
-                    .image_memory_barriers(std::slice::from_ref(&copy_barrier));
-
-                context.device().cmd_pipeline_barrier2(cmd_buffer, &dependency_info);
-            }
-
-            { // copy image to buffer
-                let copy_region = vk::BufferImageCopy2::builder()
-                    .buffer_offset(0)
-                    .image_subresource(vk::ImageSubresourceLayers {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        mip_level: 0,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    })
-                    .image_offset(vk::Offset3D {
-                        x: 0,
-                        y: 0,
-                        z: 0,
-                    })
-                    .image_extent(vk::Extent3D {
-                        width: img_width,
-                        height: img_height,
-                        depth: 1,
-                    });
-                
-                let copy_info = vk::CopyImageToBufferInfo2::builder()
-                    .src_image(sample_target.image.inner())
-                    .src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                    .dst_buffer(readback_buffer.handle())
-                    .regions(std::slice::from_ref(&copy_region));
-
-                context.device().cmd_copy_image_to_buffer2(cmd_buffer, &copy_info);
-            }
-
-            { // barrier to prevent reading from buffer until transfer has finished
-                let buffer_barrier = vk::BufferMemoryBarrier2::builder()
-                    .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                    .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-                    .dst_stage_mask(vk::PipelineStageFlags2::HOST)
-                    .dst_access_mask(vk::AccessFlags2::HOST_READ)
-                    .buffer(readback_buffer.handle())
-                    .offset(0)
-                    .size(vk::WHOLE_SIZE)
-                    .build();
-                
-                let dependency_info = vk::DependencyInfo::builder()
-                    .dependency_flags(vk::DependencyFlags::empty())
-                    .buffer_memory_barriers(std::slice::from_ref(&buffer_barrier));
-
-                context.device().cmd_pipeline_barrier2(cmd_buffer, &dependency_info);
-            }
-
-        }).unwrap();
-
-        let mut img_raw_f32 = vec![0.0f32; (4 * img_width * img_height) as usize];
-
-        readback_buffer.invalidate().unwrap();
-        readback_buffer.read_slice(&mut img_raw_f32, 0);
-        
-        let img_raw_u8 = img_raw_f32.iter()
-            .map(|lin| lin.powf(1.0 / 2.2))
-            .map(|f| (f * 255.0).clamp(0.0, 255.0) as u8)
-            .collect_vec();
-
-        let img = image::RgbaImage::from_vec(img_width, img_height, img_raw_u8).unwrap();
-
-        img.save("output.png").unwrap();
-    }
+    //     img.save("output.png").unwrap();
+    // }
 }
