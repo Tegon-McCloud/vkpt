@@ -64,6 +64,7 @@ vec3 sampleBsdfCos(out vec3 wi, vec3 wo) {
 }
 
 void main() {
+
     vec3 bc = vec3(1.0 - attribs.x - attribs.y, attribs.x, attribs.y);
 
     vec3 hit_pos = gl_WorldRayOriginEXT + gl_HitTEXT * gl_WorldRayDirectionEXT;
@@ -100,7 +101,7 @@ void main() {
     
     payload.position = hit_pos;
     payload.direction = tangent_to_world * wi;
-    
+
     payload.depth += 1;
 }
 

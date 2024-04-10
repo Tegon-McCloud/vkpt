@@ -206,6 +206,8 @@ impl<'ctx> Scene<'ctx> {
   
         let set = self.context.device().allocate_descriptor_sets(&alloc_info)?[0];
 
+        let mut writes = vec![];
+
         let mut accel_structure_write = vk::WriteDescriptorSetAccelerationStructureKHR::builder()
             .acceleration_structures(std::slice::from_ref(&tlas))
             .build();
@@ -218,6 +220,8 @@ impl<'ctx> Scene<'ctx> {
             .build();
 
         accel_write.descriptor_count = 1;
+
+        writes.push(accel_write);
 
         let output_image_info = vk::DescriptorImageInfo::builder()
             .sampler(vk::Sampler::null())
@@ -232,25 +236,28 @@ impl<'ctx> Scene<'ctx> {
             .image_info(std::slice::from_ref(&output_image_info))
             .build();
 
-        let texture_image_info = vk::DescriptorImageInfo::builder()
-            .sampler(sampler)
-            .image_view(texture_views.get(0).map(|view| view.inner()).unwrap_or(vk::ImageView::null()))
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .build();
+        writes.push(output_image_write);
+        
+        if let Some(texture_view) = texture_views.get(0) {
+            let texture_image_info = vk::DescriptorImageInfo::builder()
+                .sampler(sampler)
+                .image_view(texture_view.inner())
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .build();
             
-        let texture_image_write = vk::WriteDescriptorSet::builder()
-            .dst_set(set)
-            .dst_binding(2)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .image_info(std::slice::from_ref(&texture_image_info))
-            .build();
+            let texture_image_write = vk::WriteDescriptorSet::builder()
+                .dst_set(set)
+                .dst_binding(2)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(std::slice::from_ref(&texture_image_info))
+                .build();
+
+
+            writes.push(texture_image_write);
+        } 
 
         self.context.device().update_descriptor_sets(
-            &[
-                accel_write,
-                output_image_write,
-                texture_image_write,
-            ],
+            &writes,
             &[],
         );
 

@@ -3,7 +3,7 @@
 #![feature(once_cell_try)]
 
 use core::ffi;
-use std::{fs, path::PathBuf};
+use std::{ffi::CStr, fs, path::PathBuf};
 
 use ash::{prelude::VkResult, vk};
 use gpu_allocator::MemoryLocation;
@@ -530,7 +530,7 @@ fn run_furnace_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     
     let img_width = 512;
     let img_height = 512;
-    let save_path = "./images/furnace";
+    let save_path = "images/furnace";
 
     fs::create_dir_all(save_path).unwrap();
 
@@ -546,7 +546,7 @@ fn run_furnace_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
 
     let mut scene = Scene::new(context);
 
-    scene.load("./resources/sphere.gltf", context, None)?;
+    scene.load("resources/sphere.gltf", context, None)?;
     
     scene.set_camera(camera);
     scene.set_environment(Environment::constant(context)?);
@@ -607,7 +607,7 @@ fn run_refraction_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
 
     let img_width = 512;
     let img_height = 512;
-    let save_path = "./images/refract";
+    let save_path = "images/refract";
 
     fs::create_dir_all(save_path).unwrap();
 
@@ -624,7 +624,7 @@ fn run_refraction_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
 
     let mut scene = Scene::new(&context);
 
-    scene.load("./resources/sphere.gltf", &context, None)?;
+    scene.load("resources/sphere.gltf", &context, None)?;
     
     scene.set_camera(camera);
     let environment_map_handle = scene.add_texture(environment_map);
@@ -686,46 +686,110 @@ fn main() {
 
     let context = DeviceContext::new().expect("failed to create device context");
 
-    run_refraction_tests(&context).unwrap();
-    run_furnace_tests(&context).unwrap();
+    // run_refraction_tests(&context).unwrap();
+    // run_furnace_tests(&context).unwrap();
 
-    // unsafe {
+    unsafe {
 
-    //     let img_width = 512;
-    //     let img_height = 512;
+        let img_width = 512;
+        let img_height = 512;
     
-    //     let sample_target = SampleTarget::new(&context, img_width, img_height).unwrap();
+        let sample_target = SampleTarget::new(&context, img_width, img_height).unwrap();
 
-    //     let mut scene = Scene::new(&context);
-    //     scene.load("./resources/sphere.gltf", &context, None).unwrap();
+        let mut scene = Scene::new(&context);
 
-    //     let camera = Camera::new(
-    //         Point3::new(0.0, 0.0, 5.0),
-    //         Matrix3::new(
-    //             1.0, 0.0, -0.5,
-    //             0.0, -1.0, 0.5,
-    //             0.0, 0.0, -1.0,
-    //         )
-    //     );
-
-    //     scene.set_camera(camera);
-    //     // scene.set_environment(Environment::constant(&context).unwrap());
-
-    //     let environment_map = load_environment_map(&context).unwrap();
-    //     let environment_map_handle = scene.add_texture(environment_map);
+        let camera = Camera::new(
+            Point3::new(0.0, 0.0, 5.0),
+            Matrix3::new(
+                1.0, 0.0, -0.5,
+                0.0, -1.0, 0.5,
+                0.0, 0.0, -1.0,
+            )
+        );
+        scene.set_camera(camera);
         
-    //     scene.set_environment(Environment::spherical(&context, environment_map_handle).unwrap());
+        let environment_map = load_environment_map(&context).unwrap();
+        let environment_map_handle = scene.add_texture(environment_map);
+        
+        scene.set_environment(Environment::spherical(&context, environment_map_handle).unwrap());
+        // scene.set_environment(Environment::constant(&context).unwrap());
 
-    //     render(&context, &scene, &sample_target.image).unwrap();
-    //     let img_raw_f32 = sample_target.download().unwrap();
+        let entry_point_name = CStr::from_bytes_with_nul_unchecked(b"main\0");
 
-    //     let img_raw_u8 = img_raw_f32.iter()
-    //         .map(|lin| lin.powf(1.0 / 2.2))
-    //         .map(|f| (f * 255.0).clamp(0.0, 255.0) as u8)
-    //         .collect_vec();
+        let heitz_mat_type = scene.add_material_type(MaterialType {
+            evaluation_shader: Shader::new(&context, "shader_bin/microfacet_evaluate.rcall.spv", entry_point_name.to_owned()).unwrap(),
+            sample_shader: Shader::new(&context, "shader_bin/ms_heitz_sample.rcall.spv", entry_point_name.to_owned()).unwrap(),
+        });
 
-    //     let img = image::RgbaImage::from_vec(img_width, img_height, img_raw_u8).unwrap();
+        let heitz_mat = scene.add_material(Material {
+            ior: 1.54,
+            roughness: 0.001,
+            material_type: heitz_mat_type,
+        });
 
-    //     img.save("output.png").unwrap();
-    // }
+        let dupuy_mat_type = scene.add_material_type(MaterialType {
+            evaluation_shader: Shader::new(&context, "shader_bin/microfacet_evaluate.rcall.spv", entry_point_name.to_owned()).unwrap(),
+            sample_shader: Shader::new(&context, "shader_bin/ms_dupuy_sample.rcall.spv", entry_point_name.to_owned()).unwrap(),
+        });
+
+        let dupuy_mat = scene.add_material(Material {
+            ior: 1.54,
+            roughness: 0.001,
+            material_type: dupuy_mat_type,
+        });
+
+        scene.load("resources/sphere.gltf", &context, None).unwrap();
+
+        scene.set_instance_material(0, heitz_mat);
+        render(&context, &scene, &sample_target.image).unwrap();
+        let heitz_img_data = sample_target.download().unwrap();
+
+        scene.set_instance_material(0, dupuy_mat);
+        render(&context, &scene, &sample_target.image).unwrap();
+        let dupuy_img_data = sample_target.download().unwrap();
+
+
+        let rgba_to_gray = |pixel: [f32; 4]| (pixel[0] + pixel[1] + pixel[2]) / 3.0;
+
+        let diff_factor = 100.0;
+
+        let diff_img_data = heitz_img_data.iter().copied().array_chunks::<4>().map(rgba_to_gray)
+            .zip(dupuy_img_data.iter().copied().array_chunks::<4>().map(rgba_to_gray))
+            .map(|gray| gray.1 - gray.0)
+            .map(|diff| if diff < 0.0 { [-diff_factor * diff, 0.0, 0.0, 1.0] } else { [0.0, diff_factor * diff, 0.0, 1.0] })
+            .flatten()
+            .map(|f| (f.clamp(0.0, 1.0) * 255.0) as u8)
+            .collect_vec();
+
+        image::RgbaImage::from_vec(img_width, img_height, diff_img_data).unwrap()
+            .save("diff.png").unwrap();
+
+    
+        let gamma = 2.2;
+        let post_process = |pixel: [f32; 4]| [pixel[0].powf(1.0 / gamma), pixel[1].powf(1.0 / gamma), pixel[2].powf(1.0 / gamma), 1.0];
+
+        
+        let heitz_processed_img_data = heitz_img_data.iter()
+            .copied()
+            .array_chunks::<4>()
+            .map(post_process)
+            .flatten()
+            .map(|f| (f.clamp(0.0, 1.0) * 255.0) as u8)
+            .collect_vec();
+
+        image::RgbaImage::from_vec(img_width, img_height, heitz_processed_img_data).unwrap()
+            .save("heitz.png").unwrap();
+
+        let dupuy_processed_img_data = dupuy_img_data.iter()
+            .copied()
+            .array_chunks::<4>()
+            .map(post_process)
+            .flatten()
+            .map(|f| (f.clamp(0.0, 1.0) * 255.0) as u8)
+            .collect_vec();
+
+        image::RgbaImage::from_vec(img_width, img_height, dupuy_processed_img_data).unwrap()
+            .save("dupuy.png").unwrap();
+
+    }
 }
