@@ -682,13 +682,7 @@ fn run_refraction_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     Ok(())
 }
 
-fn main() {
-
-    let context = DeviceContext::new().expect("failed to create device context");
-
-    // run_refraction_tests(&context).unwrap();
-    // run_furnace_tests(&context).unwrap();
-
+fn compare_materials<'ctx>(context: &'ctx DeviceContext, sample_shader_1: &str, sample_shader_2: &str) -> VkResult<()> {
     unsafe {
 
         let img_width = 512;
@@ -708,53 +702,55 @@ fn main() {
         );
         scene.set_camera(camera);
         
-        let environment_map = load_environment_map(&context).unwrap();
+        let environment_map = load_environment_map(&context)?;
         let environment_map_handle = scene.add_texture(environment_map);
         
-        scene.set_environment(Environment::spherical(&context, environment_map_handle).unwrap());
+        scene.set_environment(Environment::spherical(&context, environment_map_handle)?);
         // scene.set_environment(Environment::constant(&context).unwrap());
 
         let entry_point_name = CStr::from_bytes_with_nul_unchecked(b"main\0");
 
-        let heitz_mat_type = scene.add_material_type(MaterialType {
-            evaluation_shader: Shader::new(&context, "shader_bin/microfacet_evaluate.rcall.spv", entry_point_name.to_owned()).unwrap(),
-            sample_shader: Shader::new(&context, "shader_bin/ms_heitz_sample.rcall.spv", entry_point_name.to_owned()).unwrap(),
+        let mat_type_1 = scene.add_material_type(MaterialType {
+            evaluation_shader: Shader::new(&context, "shader_bin/microfacet_evaluate.rcall.spv", entry_point_name.to_owned())?,
+            sample_shader: Shader::new(&context, sample_shader_1, entry_point_name.to_owned())?,
         });
 
-        let heitz_mat = scene.add_material(Material {
-            ior: 1.54,
-            roughness: 0.001,
-            material_type: heitz_mat_type,
+        let ior = 1.54;
+        let roughness = 0.1;
+
+        let mat_1 = scene.add_material(Material {
+            ior,
+            roughness,
+            material_type: mat_type_1,
         });
 
-        let dupuy_mat_type = scene.add_material_type(MaterialType {
-            evaluation_shader: Shader::new(&context, "shader_bin/microfacet_evaluate.rcall.spv", entry_point_name.to_owned()).unwrap(),
-            sample_shader: Shader::new(&context, "shader_bin/ms_dupuy_sample.rcall.spv", entry_point_name.to_owned()).unwrap(),
+        let mat_type_2 = scene.add_material_type(MaterialType {
+            evaluation_shader: Shader::new(&context, "shader_bin/microfacet_evaluate.rcall.spv", entry_point_name.to_owned())?,
+            sample_shader: Shader::new(&context, sample_shader_2, entry_point_name.to_owned())?,
         });
 
-        let dupuy_mat = scene.add_material(Material {
-            ior: 1.54,
-            roughness: 0.001,
-            material_type: dupuy_mat_type,
+        let mat_2 = scene.add_material(Material {
+            ior,
+            roughness,
+            material_type: mat_type_2,
         });
 
-        scene.load("resources/sphere.gltf", &context, None).unwrap();
+        scene.load("resources/sphere.gltf", &context, None)?;
 
-        scene.set_instance_material(0, heitz_mat);
-        render(&context, &scene, &sample_target.image).unwrap();
-        let heitz_img_data = sample_target.download().unwrap();
+        scene.set_instance_material(0, mat_1);
+        render(&context, &scene, &sample_target.image)?;
+        let img_data_1 = sample_target.download()?;
 
-        scene.set_instance_material(0, dupuy_mat);
-        render(&context, &scene, &sample_target.image).unwrap();
-        let dupuy_img_data = sample_target.download().unwrap();
-
+        scene.set_instance_material(0, mat_2);
+        render(&context, &scene, &sample_target.image)?;
+        let img_data_2 = sample_target.download()?;
 
         let rgba_to_gray = |pixel: [f32; 4]| (pixel[0] + pixel[1] + pixel[2]) / 3.0;
 
-        let diff_factor = 100.0;
+        let diff_factor = 10.0;
 
-        let diff_img_data = heitz_img_data.iter().copied().array_chunks::<4>().map(rgba_to_gray)
-            .zip(dupuy_img_data.iter().copied().array_chunks::<4>().map(rgba_to_gray))
+        let diff_img_data = img_data_1.iter().copied().array_chunks::<4>().map(rgba_to_gray)
+            .zip(img_data_2.iter().copied().array_chunks::<4>().map(rgba_to_gray))
             .map(|gray| gray.1 - gray.0)
             .map(|diff| if diff < 0.0 { [-diff_factor * diff, 0.0, 0.0, 1.0] } else { [0.0, diff_factor * diff, 0.0, 1.0] })
             .flatten()
@@ -767,9 +763,8 @@ fn main() {
     
         let gamma = 2.2;
         let post_process = |pixel: [f32; 4]| [pixel[0].powf(1.0 / gamma), pixel[1].powf(1.0 / gamma), pixel[2].powf(1.0 / gamma), 1.0];
-
         
-        let heitz_processed_img_data = heitz_img_data.iter()
+        let processed_img_data_1 = img_data_1.iter()
             .copied()
             .array_chunks::<4>()
             .map(post_process)
@@ -777,10 +772,10 @@ fn main() {
             .map(|f| (f.clamp(0.0, 1.0) * 255.0) as u8)
             .collect_vec();
 
-        image::RgbaImage::from_vec(img_width, img_height, heitz_processed_img_data).unwrap()
-            .save("heitz.png").unwrap();
+        image::RgbaImage::from_vec(img_width, img_height, processed_img_data_1).unwrap()
+            .save("output1.png").unwrap();
 
-        let dupuy_processed_img_data = dupuy_img_data.iter()
+        let processed_img_data_2 = img_data_2.iter()
             .copied()
             .array_chunks::<4>()
             .map(post_process)
@@ -788,8 +783,19 @@ fn main() {
             .map(|f| (f.clamp(0.0, 1.0) * 255.0) as u8)
             .collect_vec();
 
-        image::RgbaImage::from_vec(img_width, img_height, dupuy_processed_img_data).unwrap()
-            .save("dupuy.png").unwrap();
+        image::RgbaImage::from_vec(img_width, img_height, processed_img_data_2).unwrap()
+            .save("output2.png").unwrap();
 
     }
+    Ok(())
+}
+
+fn main() {
+
+    let context = DeviceContext::new().expect("failed to create device context");
+
+    // run_refraction_tests(&context).unwrap();
+    // run_furnace_tests(&context).unwrap();
+    
+    compare_materials(&context, "shader_bin/ss_vndf_sample.rcall.spv", "shader_bin/ms_dupuy_sample.rcall.spv").unwrap();
 }
