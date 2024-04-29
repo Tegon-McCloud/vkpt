@@ -2,7 +2,8 @@
 use std::ops::Range;
 
 use ash::{prelude::VkResult, vk::{self, StridedDeviceAddressRegionKHR}};
-use crate::{context::DeviceContext, resource::UploadBuffer, util};
+use gltf::json::extensions::buffer;
+use crate::{context::DeviceContext, resource::{DeviceBuffer, UploadBuffer}, util};
 
 // struct PipelineReference {
 //     pipeline: vk::Pipeline,
@@ -122,10 +123,10 @@ impl<'ctx> ShaderBindingTableDescription {
 
         let buffer_size = curr_offset;
 
-        let mut buffer = UploadBuffer::new(
+        let mut staging_buffer = UploadBuffer::new(
             context, 
             buffer_size,
-            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR
+            vk::BufferUsageFlags::TRANSFER_SRC,
         )?;
         
         for (i, entries) in self.entries.iter().enumerate() {
@@ -139,15 +140,52 @@ impl<'ctx> ShaderBindingTableDescription {
  
 
                 unsafe {
-                    buffer.write_u8_slice(entry_handle, handle_offset);
-                    buffer.write_u8_slice(entry_data, data_offset)
+                    staging_buffer.write_u8_slice(entry_handle, handle_offset);
+                    staging_buffer.write_u8_slice(entry_data, data_offset)
                 }
             }
         }
         unsafe {
-            buffer.flush()?;
+            staging_buffer.flush()?;
         }
         
+        let buffer = DeviceBuffer::new(
+            context,
+            buffer_size,
+            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR
+        )?;
+
+        context.execute_commands(|cmd_buffer| {
+
+            let copy = vk::BufferCopy2::builder()
+                .src_offset(0)
+                .dst_offset(0)
+                .size(buffer_size)
+                .build();
+
+            let copy_buffer = vk::CopyBufferInfo2::builder()
+                .src_buffer(staging_buffer.handle())
+                .dst_buffer(buffer.handle())
+                .regions(std::slice::from_ref(&copy));
+
+            context.device().cmd_copy_buffer2(cmd_buffer, &copy_buffer);
+
+            let buffer_barrier = vk::BufferMemoryBarrier2::builder()
+                .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR)
+                .dst_access_mask(vk::AccessFlags2::SHADER_BINDING_TABLE_READ_KHR)
+                .buffer(buffer.handle())
+                .offset(0)
+                .size(buffer_size)
+                .build();
+
+            let dependency = vk::DependencyInfo::builder()
+                .buffer_memory_barriers(std::slice::from_ref(&buffer_barrier));
+
+            context.device().cmd_pipeline_barrier2(cmd_buffer, &dependency);
+        })?;
+
         let buffer_address = unsafe { buffer.get_device_address() };
 
         Ok(ShaderBindingTable {
@@ -182,7 +220,7 @@ impl<'ctx> ShaderBindingTableDescription {
 
 pub struct ShaderBindingTable<'a> {
     #[allow(unused)]
-    buffer: UploadBuffer<'a>,
+    buffer: DeviceBuffer<'a>,
     
     raygen_region: vk::StridedDeviceAddressRegionKHR,
     miss_region: vk::StridedDeviceAddressRegionKHR,

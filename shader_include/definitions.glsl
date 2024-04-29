@@ -33,7 +33,8 @@ struct brdfEvaluation {
 
 struct lightSample {
     vec3 wi;
-    vec3 weight;
+    uint rand_state;
+    vec3 value;
 };
 
 #endif

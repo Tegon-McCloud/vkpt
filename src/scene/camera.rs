@@ -1,18 +1,6 @@
-use nalgebra::{Matrix3, Point3};
+use nalgebra::{Matrix3, Point3, Vector3};
 
 use crate::{pipeline::ShaderData, util::as_u8_slice};
-
-
-// #[repr(C, align(16))]
-// struct ShaderVec3([u8; 48]);
-
-// #[repr(C, align(16))]
-// struct ShaderMatrix4x3([u8; 48]);
-
-// impl ShaderData for ShaderMatrix4x3 {
-
-// }
-
 
 #[repr(C)] 
 struct CameraData {
@@ -65,9 +53,37 @@ impl Camera {
         }
     }
 
+    pub fn look_at(
+        position: Point3<f32>,
+        target: Point3<f32>,
+        up: Vector3<f32>,
+        aspect: f32,
+        vfov: f32,
+    ) -> Self {
+
+        let height = (vfov / 2.0).tan();
+        let width = aspect * height;
+
+        let scale = Matrix3::new(
+            width, 0.0, 0.0,
+            0.0, height, 0.0,
+            0.0, 0.0, 1.0,
+        );
+
+
+        let forward = (target - position).normalize();
+        let horizontal = forward.cross(&up).normalize();
+        let vertical = horizontal.cross(&forward);
+
+        let rotation = Matrix3::from_columns(&[horizontal, vertical, -forward]);
+
+        Self::new(position, rotation * scale)
+    }
+
     pub fn serialize(&self) -> impl ShaderData {
         CameraData::new(self.transform, self.position)
     }
+
 }
 
 impl Default for Camera {

@@ -34,14 +34,28 @@ float sampleExponential(float rate, inout uint rand_state) {
 }
 
 vec3 sampleCosineHemisphere(inout uint rand_state) {
-    float cosTheta = sqrt(rnd(rand_state));
-    float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
+    float cos_theta = sqrt(rnd(rand_state));
+    float sin_theta = sqrt(1.0 - cos_theta * cos_theta);
     float phi = 2.0 * pi * rnd(rand_state);
 
     return vec3(
-        sinTheta * cos(phi),
-        sinTheta * sin(phi),
-        cosTheta
+        sin_theta * cos(phi),
+        sin_theta * sin(phi),
+        cos_theta
+    );
+}
+
+vec3 sampleUniformSphere(inout uint rand_state) {
+
+    float phi = 2.0 * pi * rnd(rand_state);
+
+    float cos_theta = 2.0 * rnd(rand_state) - 1.0;
+    float sin_theta = sqrt(max(1.0 - cos_theta * cos_theta, 0.0));
+
+    return vec3(
+        sin_theta * cos(phi),
+        sin_theta * sin(phi),
+        cos_theta
     );
 }
 

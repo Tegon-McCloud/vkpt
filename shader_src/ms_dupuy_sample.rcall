@@ -11,6 +11,7 @@
 layout(shaderRecordEXT, std430) buffer sbtData {
     float ior;
     float roughness;
+    // bool conductor;
 };
 
 layout(location = 0) callableDataInEXT brdfEvaluation evaluation;
@@ -25,7 +26,7 @@ vec3 randomWalk(vec3 w, inout float weight, float alpha, float alpha_sq, float i
         float extinction = lambdaGgx(w.z, alpha_sq) * w.z;
         float dist = sampleExponential(extinction, evaluation.rand_state);
 
-        depth += dist * w.z;    
+        depth += dist * w.z;
 
         if (depth > 0.0) {
             if (!outside) {
@@ -52,6 +53,14 @@ vec3 randomWalk(vec3 w, inout float weight, float alpha, float alpha_sq, float i
             depth = log(heightCdfUniform(height));
             outside = !outside;
         }
+
+        // w = sampleConductorPhaseFunction(
+        //     -w,
+        //     weight,
+        //     alpha,
+        //     outside ? ior_rel : 1.0 / ior_rel,
+        //     evaluation.rand_state
+        // );
     }
 
     return vec3(0.0);

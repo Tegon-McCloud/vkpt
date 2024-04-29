@@ -69,7 +69,6 @@ pub struct Scene<'ctx> {
     camera: Camera,
     environment: Option<Environment<'ctx>>,
     raygen_shader: Shader<'ctx>, // abstract this into camera
-    // miss_shader: Shader<'ctx>, // abstract this into light
     closest_hit_shader: Shader<'ctx>,
 }
 
@@ -139,16 +138,11 @@ impl<'ctx> Scene<'ctx> {
     pub fn set_environment(&mut self, environment: Environment<'ctx>) {
         self.environment = Some(environment);
     }
-
-
+    
     pub fn set_instance_material(&mut self, instance_idx: usize, material: MaterialHandle) {
         self.instances[instance_idx].material = material;
     }
 
-
-    pub fn camera_data(&self) -> impl ShaderData {
-        self.camera.serialize()
-    }
 
     pub unsafe fn create_descriptor_set<'a>(&'a self, output_view: ImageView<'ctx>) -> VkResult<SceneDescriptorSet<'ctx, 'a>> {
 
@@ -437,7 +431,7 @@ impl<'ctx> Scene<'ctx> {
         shader_groups: &mut Vec<ShaderGroup<'ctx, 'a>>,
     ) where 's: 'a {
         shader_groups.push(ShaderGroup::Raygen { raygen: &self.raygen_shader });
-        sbt_desc.push_raygen_entry((shader_groups.len() - 1) as u32, &[]);
+        sbt_desc.push_raygen_entry((shader_groups.len() - 1) as u32, self.camera.serialize().as_u8_slice());
     }
 
     // safety: the sbt will refer to resources that only lives as long as this scene.

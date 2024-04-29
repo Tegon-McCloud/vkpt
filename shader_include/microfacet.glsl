@@ -146,5 +146,28 @@ vec3 sampleDielectricPhaseFunction(
     return wi;
 }
 
+vec3 sampleConductorPhaseFunction(
+    vec3 wo,
+    inout float weight,
+    float alpha,
+    float ior_rel,
+    inout uint rand_state
+) {
+    vec3 wm = sampleVndfGgx(wo, alpha, rand_state);
+    float cos_theta_om = dot(wo, wm);
+
+    float reflectance = 1.0;
+
+    float sin_theta_tm_sq = ior_rel * ior_rel * (1.0 - cos_theta_om * cos_theta_om);
+    float cos_theta_tm;
+
+    if (sin_theta_tm_sq < 1.0) {
+        cos_theta_tm = -sqrt(1.0 - sin_theta_tm_sq);
+        reflectance = reflectanceFresnel(cos_theta_om, -cos_theta_tm, ior_rel, 1.0);
+    }
+
+    weight *= reflectance;
+    return 2.0 * cos_theta_om * wm - wo;
+}
 
 #endif

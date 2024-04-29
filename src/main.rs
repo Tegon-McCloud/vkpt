@@ -2,19 +2,17 @@
 #![feature(int_roundings)]
 #![feature(once_cell_try)]
 
-use core::ffi;
-use std::{ffi::CStr, fs, path::PathBuf};
+use std::{ffi::CStr, fs};
 
 use ash::{prelude::VkResult, vk};
 use gpu_allocator::MemoryLocation;
 use itertools::Itertools;
 
 use context::DeviceContext;
-use nalgebra::{Matrix3, Point3};
+use nalgebra::{Matrix3, Point3, Vector3};
 use pipeline::{Pipeline, Shader};
 use resource::{Image, ImageView, ReadBackBuffer, UploadBuffer};
 use scene::material::{Material, MaterialType};
-use winit::event;
 
 use crate::{pipeline::{ResourceLayout, ShaderData}, scene::{camera::Camera, light::Environment, Scene}, shader_binding_table::ShaderBindingTableDescription, util::as_u8_slice};
 
@@ -248,6 +246,8 @@ unsafe fn render<'ctx>(context: &'ctx DeviceContext, scene: &Scene, image: &Imag
     let mut wait_points = [0; SAMPLES_IN_FLIGHT as usize];
     let semaphore = context.create_timeline_semaphore()?;
 
+    let start_time = std::time::Instant::now();
+
     for i in 0..SAMPLE_COUNT {
         let signal_point = i + 1;
         
@@ -295,8 +295,7 @@ unsafe fn render<'ctx>(context: &'ctx DeviceContext, scene: &Scene, image: &Imag
 
         context.device().cmd_bind_descriptor_sets(cmd_buffer, vk::PipelineBindPoint::RAY_TRACING_KHR, pipeline.layout(), 0, &[descriptor_set.inner()], &[]);
         
-        context.device().cmd_push_constants(cmd_buffer, pipeline.layout(), vk::ShaderStageFlags::RAYGEN_KHR, 0, scene.camera_data().as_u8_slice());
-        context.device().cmd_push_constants(cmd_buffer, pipeline.layout(), vk::ShaderStageFlags::RAYGEN_KHR, 64, as_u8_slice(&(i as u32)));
+        context.device().cmd_push_constants(cmd_buffer, pipeline.layout(), vk::ShaderStageFlags::RAYGEN_KHR, 0, as_u8_slice(&(i as u32)));
 
         context.extensions().ray_tracing_pipeline.cmd_trace_rays(
             cmd_buffer,
@@ -336,6 +335,10 @@ unsafe fn render<'ctx>(context: &'ctx DeviceContext, scene: &Scene, image: &Imag
         .values(std::slice::from_ref(&SAMPLE_COUNT));
 
     context.device().wait_semaphores(&wait_info, u64::MAX)?;
+
+    let end_time = std::time::Instant::now();
+
+    println!("time: {}s", (end_time - start_time).as_secs_f64());
 
     context.device().destroy_semaphore(semaphore, None);
     context.device().destroy_command_pool(cmd_pool, None);
@@ -505,7 +508,7 @@ fn load_environment_map<'ctx>(context: &'ctx DeviceContext) -> VkResult<Image<'c
 
 fn load_material_type<'ctx>(context: &'ctx DeviceContext, eval_shader_file: &str, sample_shader_file: &str) -> VkResult<MaterialType<'ctx>> {
     unsafe {
-        let entry_point_name = ffi::CStr::from_bytes_with_nul_unchecked(b"main\0").to_owned();
+        let entry_point_name = CStr::from_bytes_with_nul_unchecked(b"main\0").to_owned();
 
         let evaluation_shader = Shader::new(
             context,
@@ -610,25 +613,44 @@ fn run_refraction_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     let save_path = "images/refract";
 
     fs::create_dir_all(save_path).unwrap();
+    
+
 
     let environment_map = load_environment_map(&context).unwrap();
-    let camera = Camera::new(
-        Point3::new(0.0, 0.0, 5.0),
-        Matrix3::new(
-            1.0, 0.0, -0.5,
-            0.0, -1.0, 0.5,
-            0.0, 0.0, -1.0,
-        )
+    let camera = Camera::look_at(
+        Point3::new(-1.0, 2.0, 4.0),
+        Point3::new(0.0, 1.0, 0.0),
+        Vector3::new(0.0, 1.0, 0.0),
+        1.0,
+        std::f32::consts::PI / 4.0,
     );
     let sample_target = SampleTarget::new(&context, img_width, img_height).unwrap();
 
     let mut scene = Scene::new(&context);
 
-    scene.load("resources/sphere.gltf", &context, None)?;
-    
+    scene.load("resources/mitsuba.gltf", context, None)?;
+
     scene.set_camera(camera);
     let environment_map_handle = scene.add_texture(environment_map);
     scene.set_environment(Environment::spherical(context, environment_map_handle)?);
+
+    let lambertian_mat_type = scene.add_material_type(load_material_type(context, "shader_bin/lambertian_evaluate.rcall.spv", "shader_bin/lambertian_sample.rcall.spv")?);
+
+    let backdrop_mat = scene.add_material(Material {
+        ior: 1.54,
+        roughness: 0.5,
+        material_type: lambertian_mat_type,
+    });
+
+    let inside_mat = scene.add_material(Material {
+        ior: 1.54,
+        roughness: 0.8,
+        material_type: lambertian_mat_type,
+    });
+
+    scene.set_instance_material(0, backdrop_mat);
+    scene.set_instance_material(1, inside_mat);
+
 
     let material_types = [
         ("ss_ndf", "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ss_ndf_sample.rcall.spv"),
@@ -663,7 +685,7 @@ fn run_refraction_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     unsafe {    
         for material in materials {
     
-            scene.set_instance_material(0, material.1);
+            scene.set_instance_material(2, material.1);
     
             render(context, &scene, &sample_target.image)?;
             
@@ -790,12 +812,98 @@ fn compare_materials<'ctx>(context: &'ctx DeviceContext, sample_shader_1: &str, 
     Ok(())
 }
 
+fn run_orb_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
+    unsafe {
+
+        let img_width = 512;
+        let img_height = 512;
+    
+        let sample_target = SampleTarget::new(&context, img_width, img_height).unwrap();
+
+        let mut scene = Scene::new(&context);
+
+        let camera = Camera::look_at(
+            Point3::new(-1.0, 2.0, 4.0),
+            Point3::new(0.0, 1.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            1.0,
+            std::f32::consts::PI / 4.0,
+        );
+        scene.set_camera(camera);
+        
+        let environment_map = load_environment_map(&context)?;
+        let environment_map_handle = scene.add_texture(environment_map);
+        
+        scene.set_environment(Environment::spherical(&context, environment_map_handle)?);
+        // scene.set_environment(Environment::constant(&context).unwrap());
+
+        let entry_point_name = CStr::from_bytes_with_nul_unchecked(b"main\0");
+
+        let lambertian_mat_type = scene.add_material_type(MaterialType {
+            evaluation_shader: Shader::new(&context, "shader_bin/lambertian_evaluate.rcall.spv", entry_point_name.to_owned())?,
+            sample_shader: Shader::new(&context, "shader_bin/lambertian_sample.rcall.spv", entry_point_name.to_owned())?,
+        });
+
+        let microfacet_mat_type = scene.add_material_type(MaterialType {
+            evaluation_shader: Shader::new(&context, "shader_bin/microfacet_evaluate.rcall.spv", entry_point_name.to_owned())?,
+            sample_shader: Shader::new(&context, "shader_bin/ms_dupuy_sample.rcall.spv", entry_point_name.to_owned())?,
+        });
+
+        let backdrop_mat = scene.add_material(Material {
+            ior: 1.54,
+            roughness: 0.2,
+            material_type: lambertian_mat_type,
+        });
+
+        let inside_mat = scene.add_material(Material {
+            ior: 1.54,
+            roughness: 0.8,
+            material_type: lambertian_mat_type,
+        });
+
+        let shell_mat = scene.add_material(Material {
+            ior: 1.54,
+            roughness: 0.001,
+            material_type: microfacet_mat_type,
+        });
+
+        scene.load("resources/mitsuba.gltf", &context, None)?;
+
+        scene.set_instance_material(0, backdrop_mat);
+        scene.set_instance_material(1, inside_mat);
+        scene.set_instance_material(2, shell_mat);
+
+        render(&context, &scene, &sample_target.image)?;
+        let img_data = sample_target.download()?;
+
+    
+        let gamma = 2.2;
+        let post_process = |pixel: [f32; 4]| [pixel[0].powf(1.0 / gamma), pixel[1].powf(1.0 / gamma), pixel[2].powf(1.0 / gamma), 1.0];
+        
+        let processed_img_data = img_data.iter()
+            .copied()
+            .array_chunks::<4>()
+            .map(post_process)
+            .flatten()
+            .map(|f| (f.clamp(0.0, 1.0) * 255.0) as u8)
+            .collect_vec();
+
+        image::RgbaImage::from_vec(img_width, img_height, processed_img_data).unwrap()
+            .save("images/orb.png").unwrap();
+
+    }
+    Ok(())
+
+}
+
 fn main() {
 
     let context = DeviceContext::new().expect("failed to create device context");
 
-    // run_refraction_tests(&context).unwrap();
+    run_refraction_tests(&context).unwrap();
     // run_furnace_tests(&context).unwrap();
     
-    compare_materials(&context, "shader_bin/ss_vndf_sample.rcall.spv", "shader_bin/ms_dupuy_sample.rcall.spv").unwrap();
+    // run_orb_test(&context).unwrap();
+
+    // compare_materials(&context, "shader_bin/ss_vndf_sample.rcall.spv", "shader_bin/ms_dupuy_sample.rcall.spv").unwrap();
 }

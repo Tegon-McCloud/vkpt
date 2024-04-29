@@ -1,9 +1,11 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
+#extension GL_EXT_buffer_reference : require
 #extension GL_GOOGLE_include_directive : enable
 
 #include "../shader_include/definitions.glsl"
 #include "../shader_include/random.glsl"
+
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 layout(set = 0, binding = 1, rgba32f) uniform image2D image;
@@ -13,8 +15,12 @@ struct Camera {
     vec3 position;
 };
 
-layout(push_constant) uniform Params {
+
+layout(shaderRecordEXT, std430) buffer sbtData {
     Camera camera;
+};
+
+layout(push_constant) uniform Params {
     uint sample_index;
 } params;
 
@@ -30,8 +36,8 @@ void main() {
 
     vec2 uv = (vec2(position) + vec2(rnd(path_info.rand_state), rnd(path_info.rand_state))) / vec2(size);
     
-    path_info.position = params.camera.position;
-    path_info.direction = normalize(params.camera.matrix * vec3(uv, 1.0));
+    path_info.position = camera.position;
+    path_info.direction = normalize(camera.matrix * vec3(2.0 * uv.x - 1.0, -2.0 * uv.y + 1.0, -1.0));
     path_info.depth = 0u;
     
     path_info.weight = vec3(1.0);
