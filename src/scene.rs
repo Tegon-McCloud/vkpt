@@ -68,8 +68,9 @@ pub struct Scene<'ctx> {
     instances: Vec<GeometryInstance>,
     camera: Camera,
     environment: Option<Environment<'ctx>>,
-    raygen_shader: Shader<'ctx>, // abstract this into camera
-    closest_hit_shader: Shader<'ctx>,
+    raygen_shader: Shader<'ctx>, 
+    closest_hit_shader: Shader<'ctx>, 
+    shadow_miss_shader: Shader<'ctx>,
 }
 
 impl<'ctx> Scene<'ctx> {
@@ -92,6 +93,14 @@ impl<'ctx> Scene<'ctx> {
             ).unwrap()
         };
 
+        let shadow_miss_shader = unsafe {
+            Shader::new(
+                context,
+                "shader_bin/shadow.rmiss.spv",
+                CStr::from_bytes_with_nul_unchecked(b"main\0").to_owned(),
+            ).unwrap()
+        };
+
         Self {
             context,
             meshes: Vec::new(),
@@ -103,6 +112,7 @@ impl<'ctx> Scene<'ctx> {
             environment: None,
             raygen_shader,
             closest_hit_shader,
+            shadow_miss_shader,
         }
     }
 
@@ -280,7 +290,7 @@ impl<'ctx> Scene<'ctx> {
                 .binding(0)
                 .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
                 .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR)
+                .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR)
                 .build(),
     
             vk::DescriptorSetLayoutBinding::builder()
@@ -422,6 +432,7 @@ impl<'ctx> Scene<'ctx> {
         self.add_miss_entry(sbt_desc, shader_groups);
         self.add_instance_entries(sbt_desc, shader_groups);
         self.add_material_entries(sbt_desc, shader_groups);
+        self.add_light_entries(sbt_desc, shader_groups);
     }
 
     // safety: the sbt will refer to resources that only lives as long as this scene.
@@ -434,7 +445,7 @@ impl<'ctx> Scene<'ctx> {
         sbt_desc.push_raygen_entry((shader_groups.len() - 1) as u32, self.camera.serialize().as_u8_slice());
     }
 
-    // safety: the sbt will refer to resources that only lives as long as this scene.
+    // safety: the sbt will refer to resources that only lives as long as this scene ('s).
     unsafe fn add_miss_entry<'s, 'a>(
         &'s self,
         sbt_desc: &mut ShaderBindingTableDescription,
@@ -445,6 +456,9 @@ impl<'ctx> Scene<'ctx> {
             shader_groups.push(ShaderGroup::Miss { miss: environment.miss_shader().unwrap() });
             sbt_desc.push_miss_entry((shader_groups.len() - 1) as u32, &[]);
         }
+
+        shader_groups.push(ShaderGroup::Miss { miss: &self.shadow_miss_shader });
+        sbt_desc.push_miss_entry((shader_groups.len() - 1) as u32, &[]);
     }
 
     // safety: the sbt will refer to resources that only lives as long as this scene.
@@ -470,11 +484,11 @@ impl<'ctx> Scene<'ctx> {
     }
 
     // safety: the sbt will refer to resources that only lives as long as this scene.
-    unsafe fn add_material_entries<'a>(
-        &'a self,
+    unsafe fn add_material_entries<'s, 'a>(
+        &'s self,
         sbt_desc: &mut ShaderBindingTableDescription,
         shader_groups: &mut Vec<ShaderGroup<'ctx, 'a>>,
-    ) {
+    ) where 's: 'a {
 
         let shader_group_begin = shader_groups.len();
 
@@ -495,6 +509,18 @@ impl<'ctx> Scene<'ctx> {
 
             sbt_desc.push_callable_entry(evaluation_index as u32, unsafe { util::as_u8_slice(&sbt_data) });
             sbt_desc.push_callable_entry(sample_index as u32, unsafe { util::as_u8_slice(&sbt_data) });
+        }
+    }
+
+    unsafe fn add_light_entries<'s, 'a>(
+        &'s self,
+        sbt_desc: &mut ShaderBindingTableDescription,
+        shader_groups: &mut Vec<ShaderGroup<'ctx, 'a>>,
+    ) where 's: 'a {
+
+        if let Some(environment) = &self.environment {
+            shader_groups.push(ShaderGroup::Callable { callable: environment.sample_shader() });
+            sbt_desc.push_callable_entry((shader_groups.len() - 1) as u32, &[]);
         }
     }
 

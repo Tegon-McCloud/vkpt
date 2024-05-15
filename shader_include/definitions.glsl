@@ -19,9 +19,8 @@ struct pathInfo {
     uint channel;
 };
 
-struct intersection {
-    vec3 position;
-    vec3 normal;
+struct shadowInfo {
+    bool blocked;
 };
 
 struct brdfEvaluation {
@@ -32,8 +31,10 @@ struct brdfEvaluation {
 };
 
 struct lightSample {
-    vec3 wi;
+    vec3 wi_world;
     uint rand_state;
+    vec3 position;
+    float dist;
     vec3 value;
 };
 

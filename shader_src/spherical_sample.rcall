@@ -14,17 +14,16 @@ layout(location = 0) callableDataInEXT lightSample light_sample;
 
 void main() {
 
-    light_sample.wi = sampleUniformSphere(light_sample.rand_state);
+    vec3 wi = sampleUniformSphere(light_sample.rand_state);
 
     vec2 uv = vec2(
-        atan(light_sample.wi.x, light_sample.wi.z) / (2.0 * pi),
-        acos(light_sample.wi.y) / pi
+        atan(wi.x, wi.z) / (2.0 * pi),
+        acos(wi.y) / pi
     );
 
     uvec4 env_rgbe = texture(environment_map, uv);
     vec3 env_radiance = (1.0 / 256.0) * vec3(env_rgbe.rgb) * pow(2.0, float(env_rgbe.a) - 128.0);
     
-    env_radiance /= 4.0;
-
+    light_sample.wi_world = wi;
     light_sample.value = 4.0 * pi * env_radiance;
 }

@@ -207,7 +207,7 @@ impl<'ctx> SampleTarget<'ctx> {
 unsafe fn render<'ctx>(context: &'ctx DeviceContext, scene: &Scene, image: &Image<'ctx>) -> VkResult<()> {
 
     const SAMPLES_IN_FLIGHT: u64 = 2;
-    const SAMPLE_COUNT: u64 = 512;
+    const SAMPLE_COUNT: u64 = 8192;
 
     let descriptor_set = scene.create_descriptor_set(ImageView::new(image, vk::Format::R32G32B32A32_SFLOAT, 0..1, 0..1)?)?;
 
@@ -846,24 +846,24 @@ fn run_orb_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
 
         let microfacet_mat_type = scene.add_material_type(MaterialType {
             evaluation_shader: Shader::new(&context, "shader_bin/microfacet_evaluate.rcall.spv", entry_point_name.to_owned())?,
-            sample_shader: Shader::new(&context, "shader_bin/ms_dupuy_sample.rcall.spv", entry_point_name.to_owned())?,
+            sample_shader: Shader::new(&context, "shader_bin/ss_vndf_sample.rcall.spv", entry_point_name.to_owned())?,
         });
 
         let backdrop_mat = scene.add_material(Material {
             ior: 1.54,
-            roughness: 0.2,
+            roughness: 0.5,
             material_type: lambertian_mat_type,
         });
-
+    
         let inside_mat = scene.add_material(Material {
             ior: 1.54,
             roughness: 0.8,
             material_type: lambertian_mat_type,
         });
-
+        
         let shell_mat = scene.add_material(Material {
             ior: 1.54,
-            roughness: 0.001,
+            roughness: 0.1,
             material_type: microfacet_mat_type,
         });
 
@@ -876,9 +876,15 @@ fn run_orb_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
         render(&context, &scene, &sample_target.image)?;
         let img_data = sample_target.download()?;
 
-    
+
         let gamma = 2.2;
-        let post_process = |pixel: [f32; 4]| [pixel[0].powf(1.0 / gamma), pixel[1].powf(1.0 / gamma), pixel[2].powf(1.0 / gamma), 1.0];
+
+        let post_process = |pixel: [f32; 4]| [
+                (pixel[0] / 2.0).powf(1.0 / gamma),
+                (pixel[1] / 2.0).powf(1.0 / gamma),
+                (pixel[2] / 2.0).powf(1.0 / gamma),
+                1.0
+            ];
         
         let processed_img_data = img_data.iter()
             .copied()
@@ -900,10 +906,10 @@ fn main() {
 
     let context = DeviceContext::new().expect("failed to create device context");
 
-    run_refraction_tests(&context).unwrap();
+    // run_refraction_tests(&context).unwrap();
     // run_furnace_tests(&context).unwrap();
     
-    // run_orb_test(&context).unwrap();
+    run_orb_test(&context).unwrap();
 
     // compare_materials(&context, "shader_bin/ss_vndf_sample.rcall.spv", "shader_bin/ms_dupuy_sample.rcall.spv").unwrap();
 }

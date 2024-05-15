@@ -10,6 +10,36 @@ float ndfGgx(float cos_theta_m, float alpha_sq) {
     return alpha_sq / (pi * denom * denom);
 }
 
+float projectedArea(vec3 w) {
+    if(w.z > 0.999f) {
+        return 1.0;
+    } 
+
+    if(w.z < -0.999f) {
+        return 0.0;
+    } 
+
+    float cos_theta_sq = w.z * w.z;
+    float sin_theta_sq = 1.0 - cos_theta_sq;
+
+    return 0.5 * (w.z + sqrt(max(cos_theta_sq + sin_theta_sq * alpha_sq, 0.0)));
+}
+
+float vndfGgx(vec3 wi, vec3 wm, float alpha_sq) {
+
+    if wm.z < 0.0 {
+        return 0.0;
+    }
+
+    float projected_area = projectedArea(w);
+
+    if (projected_area == 0.0) {
+        return 0.0;
+    }
+
+    return max(dot(wi, wm), 0.0) * ndfGgx(wm.z, alpha_sq) / projected_area;
+}
+
 vec3 sampleNdfGgx(float alpha_sq, inout uint rand_state) {
     float u0 = rnd(rand_state);
     float u1 = rnd(rand_state);
