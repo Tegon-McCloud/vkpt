@@ -6,7 +6,6 @@
 #include "../shader_include/definitions.glsl"
 #include "../shader_include/random.glsl"
 
-
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 layout(set = 0, binding = 1, rgba32f) uniform image2D image;
 
@@ -26,6 +25,26 @@ layout(push_constant) uniform Params {
 
 layout(location = 0) rayPayloadEXT pathInfo path_info;
 
+vec3 sampleVndfStdGgx(vec3 wi, inout uint rand_state) {
+
+    float phi = 2.0 * pi * rnd(rand_state);
+
+    float z = (1.0 - rnd(rand_state)) * (1.0 + wi.z) - wi.z;
+    float sin_theta = sqrt(max(1.0 - z * z, 0.0));
+    float x = sin_theta * cos(phi);
+    float y = sin_theta * sin(phi);
+
+    return wi + vec3(x, y, z); // unnormalized!
+}
+
+vec3 sampleVndfGgx(vec3 wi, float alpha, inout uint rand_state) {
+    vec3 wi_std = normalize(vec3(wi.xy * alpha, wi.z));
+    vec3 wm_std = sampleVndfStdGgx(wi_std, rand_state);
+
+    return normalize(vec3(wm_std.xy * alpha, wm_std.z));
+}
+
+
 void main() {
 
     ivec2 size = ivec2(gl_LaunchSizeEXT.xy);
@@ -33,6 +52,9 @@ void main() {
 
     uint launch_index = position.y * size.x + position.x;
     path_info.rand_state = tea(params.sample_index, launch_index);
+    path_info.error_state = 0;
+
+
 
     vec2 uv = (vec2(position) + vec2(rnd(path_info.rand_state), rnd(path_info.rand_state))) / vec2(size);
     
@@ -44,6 +66,7 @@ void main() {
     path_info.radiance = vec3(0.0);
     path_info.channel = 3u;
     path_info.emit = 1u;
+   
 
     const uint ray_flags = gl_RayFlagsOpaqueEXT;
     const uint cull_mask = 0xff;
@@ -55,8 +78,8 @@ void main() {
         }
 
         traceRayEXT(tlas,     // acceleration structure
-                ray_flags,           // rayFlags
-                cull_mask,           // cullMask
+                ray_flags,          // rayFlags
+                cull_mask,          // cullMask
                 0,                  // sbtRecordOffset
                 0,                  // sbtRecordStride
                 0,                  // missIndex
@@ -66,7 +89,6 @@ void main() {
                 tmax,               // ray max range
                 0                   // payload (location = 0)
         );
-
     }
 
     float sample_weight = 1.0 / float(params.sample_index + 1);
@@ -76,5 +98,8 @@ void main() {
 
     imageStore(image, position, vec4(new, 1.0));
 
+    if (path_info.error_state != 0) {
+        imageStore(image, position, vec4(1000.0, 0.0, 1000.0, 1.0));    
+    }
 
 }

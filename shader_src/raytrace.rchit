@@ -47,10 +47,12 @@ vec3 evaluateBsdfCos(vec3 wi, vec3 wo) {
     brdf_evaluation.wi = wi;
     brdf_evaluation.wo = wo;
     brdf_evaluation.rand_state = payload.rand_state;
+    brdf_evaluation.error_state = payload.error_state;
     
     executeCallableEXT(2 * material_index, 0);
 
     payload.rand_state = brdf_evaluation.rand_state;
+    payload.error_state = brdf_evaluation.error_state;
 
     return brdf_evaluation.weight;
 }
@@ -58,11 +60,13 @@ vec3 evaluateBsdfCos(vec3 wi, vec3 wo) {
 vec3 sampleBsdfCos(out vec3 wi, vec3 wo) {
     brdf_evaluation.wo = wo;
     brdf_evaluation.rand_state = payload.rand_state;
+    brdf_evaluation.error_state = payload.error_state;
     
     executeCallableEXT(2 * material_index + 1, 0);
 
     wi = brdf_evaluation.wi;
     payload.rand_state = brdf_evaluation.rand_state;
+    payload.error_state = brdf_evaluation.error_state;
 
     return brdf_evaluation.weight;
 }
@@ -125,7 +129,7 @@ void sampleIndirect(vec3 position, vec3 wo, mat3 tangent_to_world) {
         payload.depth = max_depth;
         return;
     }
-    
+
     payload.position = position;
     payload.direction = tangent_to_world * wi;
 
@@ -153,11 +157,11 @@ void main() {
     
     vec3 wo = -(world_to_tangent * gl_WorldRayDirectionEXT);
 
-    // sampleDirect(position, wo, world_to_tangent);
+    sampleDirect(position, wo, world_to_tangent);
     sampleIndirect(position, wo, tangent_to_world);
 
-    payload.emit = 1;
 
-    // payload.depth = max_depth;
+    payload.emit = 0;
+
 }
 

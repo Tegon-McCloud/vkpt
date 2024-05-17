@@ -30,13 +30,7 @@ void main() {
         return;
     }
 
-    float ior_rel;
-
-    if (cos_theta_i < 0.0) {
-        ior_rel = ior;
-    } else {
-        ior_rel = 1.0 / ior;
-    }
+    float ior_rel = cos_theta_i > 0.0 ? 1.0 / ior : ior;
 
     bool transmit = cos_theta_i * cos_theta_o < 0.0;
 
@@ -66,23 +60,23 @@ void main() {
     float cos_theta_im = dot(wi, wm);
     float cos_ratio_i = cos_theta_im / cos_theta_i;
 
-    float reflectance = 1.0;
+    float fresnel = 1.0;
 
     if (transmit) {
-        reflectance = reflectanceFresnel(abs(cos_theta_im), abs(cos_theta_om), ior_rel, 1.0);
+        fresnel = 1.0 - reflectanceFresnel(abs(cos_theta_im), abs(cos_theta_om), ior_rel, 1.0);
     } else {
         float sin_theta_tm_sq = ior_rel * ior_rel * (1.0 - cos_theta_im * cos_theta_im);
 
         if (sin_theta_tm_sq < 1.0) {
-            float cos_theta_t = sqrt(1.0 - sin_theta_tm_sq);
-            reflectance = reflectanceFresnel(abs(cos_theta_im), cos_theta_t, ior_rel, 1.0);
+            float cos_theta_tm = sqrt(1.0 - sin_theta_tm_sq);
+            fresnel = reflectanceFresnel(abs(cos_theta_im), cos_theta_tm, ior_rel, 1.0);
         }
     }
 
     float cos_weight;
 
     if (transmit) {
-        float a = ior_rel * cos_theta_im + cos_theta_om;
+        float a = cos_theta_i > 0.0 ? cos_theta_im + ior * cos_theta_om : ior * cos_theta_im + cos_theta_om;
         cos_weight = abs(cos_theta_im) * cos_ratio_o / (a * a);
     } else {
         cos_weight = 0.25 / abs(cos_theta_o);
@@ -91,5 +85,5 @@ void main() {
     float distribution = ndfGgx(wm.z, alpha_sq);
     float geometry = geometryGgx(abs(cos_theta_i), alpha_sq) * geometryGgx(abs(cos_theta_o), alpha_sq);
 
-    evaluation.weight = vec3(reflectance * distribution * geometry * cos_weight);
+    evaluation.weight = vec3(fresnel * distribution * geometry * cos_weight);
 }

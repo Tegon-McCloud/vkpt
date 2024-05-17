@@ -15,30 +15,78 @@ layout(shaderRecordEXT, std430) buffer sbtData {
 
 layout(location = 0) callableDataInEXT brdfEvaluation evaluation;
 
+vec3 sampleDielectricPhaseFunction2(
+    vec3 wi,
+    bool outside_i, // is wi on the outside
+    out bool outside_o, // is wo on the outside
+    float alpha, 
+    float alpha_sq,
+    float ior_rel, // one over the ior that wi is in 
+    inout uint rand_state
+) {
 
-float evalPhaseFunction(vec3 wi, vec3 wo, bool wi_outside, bool wo_outside) {
+    vec3 wm; // in wi's hemisphere
 
-    float ior_rel = wi_outside ? 1.0 / ior : ior;
-
-    if (wi_outside == wo_outside) {
-        vec3 wm = normalize(wi + wo);
-
+    if (outside_i) {
+        wm = sampleVndfGgx(wi, alpha, rand_state);
     } else {
-        vec3 wh = -normalize(ior_rel * wi + wo);
-        wh *= (wi_outside) ? (sign(wh.z)) : (-sign(wh.z));
+        wm = -sampleVndfGgx(-wi, alpha, rand_state);
+    }
 
-        if (dot(wh, wi) < 0.0) {
-            return 0.0;
-        }
+    float cos_theta_im = dot(wi, wm);
 
-        float value;
+    float reflectance = 1.0;
 
-        if (wi_outside) {        
-            float reflectance = 1.0;
+    float sin_theta_tm_sq = ior_rel * ior_rel * (1.0 - cos_theta_im * cos_theta_im);
+    float cos_theta_tm;
+
+    if (sin_theta_tm_sq < 1.0) {
+        cos_theta_tm = sqrt(1.0 - sin_theta_tm_sq);
+        reflectance = reflectanceFresnel(cos_theta_im, cos_theta_tm, ior_rel, 1.0);
+    }
+
+    float u = rnd(rand_state);
+    vec3 wo;
+
+    if(u < reflectance) {
+        wo = 2.0 * cos_theta_im * wm - wi;
+        outside_o = outside_i;
+    } else {
+        wo = (ior_rel * cos_theta_im + cos_theta_tm) * wm - ior_rel * wi;
+        outside_o = !outside_i;
+    }
+
+    return wo;
+}
+
+float evalDielectricPhaseFunction(vec3 wi, vec3 wo, bool outside_i, bool outside_o, float alpha_sq, float ior_rel) {
+
+    if (outside_i == outside_o) { // reflection
+        
+        vec3 wm = normalize(wi + wo); 
 
 
-        }
-            value = (1.0 - )
+    } else { // refraction
+        // vec3 wm = -normalize(ior_rel * wi + wo);
+        // wm *= (wi_outside) ? (sign(wm.z)) : (-sign(wm.z));
+
+        // float cos_theta_im = dot(wm, wi);
+        // float cos_theta_tm = dot(wm, wo);
+
+        // if (cos_theta_im < 0.0) {
+        //     return 0.0;
+        // }
+
+        // float value;
+
+        // if (wi_outside) {
+
+        //     float reflectance = reflectanceFresnel(cos_theta_im, , 1.0, ior_rel);
+
+        //     (1.0 - reflectance) * vndfGgx(wi, wm, alpha_sq) * max(0.0, -dot(wo, wm)) * 
+
+        // }
+        
         
 
     }
@@ -49,69 +97,50 @@ float evalPhaseFunction(vec3 wi, vec3 wo, bool wi_outside, bool wo_outside) {
 
 } 
 
-vec3 randomWalk(vec3 w, inout float weight, float alpha, float alpha_sq, float ior_rel) {
-    float height = 1.0 + invHeightCdfUniform(0.999);
+float randomWalk(vec3 w, vec3 wo) {
 
+    float alpha = roughness;
+    float alpha_sq = alpha * alpha;
+
+    float sum = 0.0;
+
+    bool wo_outside = wo.z > 0.0;
     bool outside = w.z < 0.0;
 
-    if (!outside) {
-        w.z = -w.z;
-    }
+    float height = 1.0 + invHeightCdfUniform(0.999);
 
     for (int i = 0; i < 32; i++) {
 
         bool escaped;
 
-        height = sampleHeightGgxUniform(w, height, escaped, alpha_sq, evaluation.rand_state);
+        if(outside) {
+            height = sampleHeightGgxUniform(w, height, escaped, alpha_sq, evaluation.rand_state);
+        } else {
+            height = -sampleHeightGgxUniform(-w, -height, escaped, alpha_sq, evaluation.rand_state);
+        }
 
         if (escaped) {
-            if (!outside) {
-                w.z = -w.z;
-            }
-
-            return w;
+            break;
         }
 
-        bool transmitted;
-
-        w = sampleDielectricPhaseFunction(
+        w = sampleDielectricPhaseFunction2(
             -w,
-            weight,
-            transmitted,
+            outside,
+            outside,
             alpha,
-            outside ? ior_rel : 1.0 / ior_rel,
+            alpha_sq,
+            outside ? 1.0 / ior : ior,
             evaluation.rand_state
         );
-
-        if(transmitted) {
-            w.z = -w.z;
-            height = -height;
-            outside = !outside;
-        }
     }
 
-    return vec3(0.0);
+    return sum;
 }
 
 void main() {
 
+    vec3 w = -evaluation.wi;
+    vec3 wo = evaluation.wo;
 
-    float alpha = roughness;    
-    float alpha_sq = alpha * alpha;
-
-    float weight = 1.0;
-
-    vec3 w = -evaluation.wo;
-    float ior_rel = 1.0 / ior;
-
-    w = randomWalk(w, weight, alpha, alpha_sq, ior_rel);
-
-    if (w == vec3(0.0)) {
-        evaluation.wi = vec3(0.0);
-        evaluation.weight = vec3(0.0);
-        return;
-    }
-
-    evaluation.wi = w;
-    evaluation.weight = vec3(weight);
+    evaluation.weight = vec3(randomWalk(w, wo));
 }

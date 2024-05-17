@@ -17,6 +17,7 @@ struct pathInfo {
     uint emit;
     vec3 weight;
     uint channel;
+    uint error_state;
 };
 
 struct shadowInfo {
@@ -27,6 +28,7 @@ struct brdfEvaluation {
     vec3 wi;
     uint rand_state;
     vec3 wo;
+    uint error_state;
     vec3 weight;
 };
 

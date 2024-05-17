@@ -10,7 +10,7 @@ float ndfGgx(float cos_theta_m, float alpha_sq) {
     return alpha_sq / (pi * denom * denom);
 }
 
-float projectedArea(vec3 w) {
+float projectedArea(vec3 w, float alpha_sq) {
     if(w.z > 0.999f) {
         return 1.0;
     } 
@@ -22,22 +22,22 @@ float projectedArea(vec3 w) {
     float cos_theta_sq = w.z * w.z;
     float sin_theta_sq = 1.0 - cos_theta_sq;
 
-    return 0.5 * (w.z + sqrt(max(cos_theta_sq + sin_theta_sq * alpha_sq, 0.0)));
+    return 0.5 * (w.z + sqrt(cos_theta_sq + sin_theta_sq * alpha_sq));
 }
 
-float vndfGgx(vec3 wi, vec3 wm, float alpha_sq) {
+float vndfGgx(vec3 w, vec3 wm, float alpha_sq) {
 
-    if wm.z < 0.0 {
+    if (wm.z < 0.0) {
         return 0.0;
     }
 
-    float projected_area = projectedArea(w);
+    float projected_area = projectedArea(w, alpha_sq);
 
     if (projected_area == 0.0) {
         return 0.0;
     }
 
-    return max(dot(wi, wm), 0.0) * ndfGgx(wm.z, alpha_sq) / projected_area;
+    return max(dot(w, wm), 0.0) * ndfGgx(wm.z, alpha_sq) / projected_area;
 }
 
 vec3 sampleNdfGgx(float alpha_sq, inout uint rand_state) {
@@ -55,22 +55,25 @@ vec3 sampleNdfGgx(float alpha_sq, inout uint rand_state) {
     );
 }
 
-vec3 sampleVndfGgx(vec3 w, float alpha, inout uint rand_state) {
-
-    vec3 w_std = normalize(vec3(w.xy * alpha, w.z));
+vec3 sampleVndfStdGgx(vec3 wi, inout uint rand_state) {
 
     float phi = 2.0 * pi * rnd(rand_state);
 
-    float z = (1.0 - rnd(rand_state)) * (1.0 + w_std.z) - w_std.z;
+    float z = (1.0 - rnd(rand_state)) * (1.0 + wi.z) - wi.z;
     float sin_theta = sqrt(max(1.0 - z * z, 0.0));
     float x = sin_theta * cos(phi);
     float y = sin_theta * sin(phi);
 
-    // unnormalized!
-    vec3 wm_std = w_std + vec3(x, y, z);
+    return wi + vec3(x, y, z); // unnormalized!
+}
+
+vec3 sampleVndfGgx(vec3 wi, float alpha, inout uint rand_state) {
+    vec3 wi_std = normalize(vec3(wi.xy * alpha, wi.z));
+    vec3 wm_std = sampleVndfStdGgx(wi_std, rand_state);
 
     return normalize(vec3(wm_std.xy * alpha, wm_std.z));
 }
+
 
 float lambdaGgx(float cos_theta, float alpha_sq) {
     float cos_theta_sq = cos_theta * cos_theta;
@@ -136,9 +139,9 @@ float sampleHeightGgxUniform(
         escaped = true;
         return 0.0;
     }
+    escaped = false;
 
     float denom = pow(1.0 - u, 1.0 / lambda);
-    escaped = false;
     return invHeightCdfUniform(heightCdfUniform(height) / denom);
 }
 
