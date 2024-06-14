@@ -19,11 +19,10 @@ pub struct Environment<'ctx> {
 
 impl<'ctx> Environment<'ctx> {
     pub fn constant(context: &'ctx DeviceContext) -> VkResult<Environment> {
-
         let sample_shader = unsafe {
             Shader::new(
                 context,
-                "shader_bin/spherical_sample.rcall.spv", 
+                "shader_bin/constant_sample.rcall.spv", 
                 CStr::from_bytes_with_nul_unchecked(b"main\0").to_owned(),
             )?
         };
@@ -68,6 +67,11 @@ impl<'ctx> Environment<'ctx> {
             texture: Some(texture),
         })
     }
+
+    pub fn texture(&self) -> Option<TextureHandle> {
+        self.texture
+    }
+
 }
 
 impl<'ctx> LightSource<'ctx> for Environment<'ctx> {

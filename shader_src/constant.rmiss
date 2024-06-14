@@ -9,16 +9,10 @@ layout(location = 0) rayPayloadInEXT pathInfo payload;
 void main() {
 
     vec3 direction = gl_WorldRayDirectionEXT;
-
-    // vec2 uv = vec2(
-    //     atan(direction.x, direction.z) / (2.0 * pi) + 0.5,
-    //     acos(direction.y) / pi
-    // );
     
-    vec3 color = vec3(0.5);
+    vec3 env_radiance = vec3(0.5);
 
-    payload.radiance += payload.weight * color;
-    // payload.radiance += payload.weight * vec3(0.286, 0.545, 0.960);
+    payload.radiance += payload.weight * env_radiance;
     payload.depth = max_depth; // end the path
 
 }

@@ -83,7 +83,7 @@ void main() {
     }
     
     float distribution = ndfGgx(wm.z, alpha_sq);
-    float geometry = geometryGgx(abs(cos_theta_i), alpha_sq) * geometryGgx(abs(cos_theta_o), alpha_sq);
-
+    float geometry = maskingGgx(abs(cos_theta_i), alpha_sq) * maskingGgx(abs(cos_theta_o), alpha_sq);
+    
     evaluation.weight = vec3(fresnel * distribution * geometry * cos_weight);
 }

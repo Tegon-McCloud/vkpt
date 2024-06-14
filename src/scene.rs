@@ -1,4 +1,4 @@
-use std::{ffi::CStr, ops::Range, path::Path};
+use std::{borrow::Borrow, ffi::CStr, ops::Range, path::Path};
 
 use ash::{vk, prelude::VkResult};
 use nalgebra::{Matrix3x4, Matrix4};
@@ -285,28 +285,31 @@ impl<'ctx> Scene<'ctx> {
 
     unsafe fn create_descriptor_set_layout(&self) -> VkResult<vk::DescriptorSetLayout> {
         
-        let layout_bindings = [
+        let mut layout_bindings = vec![
             vk::DescriptorSetLayoutBinding::builder()
                 .binding(0)
                 .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR)
                 .build(),
-    
+
             vk::DescriptorSetLayoutBinding::builder()
                 .binding(1)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR)
                 .build(),
+        ];
 
-            vk::DescriptorSetLayoutBinding::builder()
+        if self.environment.as_ref().and_then(|environment| environment.texture()).is_some() {
+            layout_bindings.push(vk::DescriptorSetLayoutBinding::builder()
                 .binding(2)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::ALL)
-                .build(),
-        ];
+                .build()
+            );
+        }
     
         let layout_info = vk::DescriptorSetLayoutCreateInfo::builder()
             .bindings(&layout_bindings);

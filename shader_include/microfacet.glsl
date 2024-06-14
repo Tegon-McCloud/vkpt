@@ -83,7 +83,7 @@ float lambdaGgx(float cos_theta, float alpha_sq) {
     return 0.5 * (sign(cos_theta) * sqrt(1.0 + alpha_sq * tan_theta_sq) - 1.0);
 }
 
-float geometryGgx(float cos_theta, float alpha_sq) {
+float maskingGgx(float cos_theta, float alpha_sq) {
     return 1.0 / (1.0 + lambdaGgx(cos_theta, alpha_sq));
 }
 
@@ -92,7 +92,7 @@ float maskingShadowingGgx(float cos_theta_i, float cos_theta_o, float alpha_sq) 
 }
 
 float heightCdfUniform(float height) {
-    return clamp(0.0, 1.0, 0.5 * (height + 1.0));
+    return clamp(0.5 * (height + 1.0), 0.0, 1.0);
 }
 
 float invHeightCdfUniform(float u) {
@@ -107,21 +107,21 @@ float sampleHeightGgxUniform(
     inout uint rand_state
 ) {
 
-    float u = rnd(rand_state);
+    if (abs(w.z) < 0.001) {
+        escaped = false;
+        return height;
+    }
 
-    if (w.z > 0.9999) {
+    if (w.z > 0.999) {
         escaped = true;
         return 0.0;
     }
-    
-    if (w.z < -0.9999) {
+
+    float u = rnd(rand_state);
+
+    if (w.z < -0.999) {
         escaped = false;
         return invHeightCdfUniform(u * heightCdfUniform(height));
-    }
-
-    if (abs(w.z) < 0.0001) {
-        escaped = false;
-        return height;
     }
 
     float lambda = lambdaGgx(w.z, alpha_sq);

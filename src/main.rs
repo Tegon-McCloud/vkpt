@@ -2,19 +2,19 @@
 #![feature(int_roundings)]
 #![feature(once_cell_try)]
 
-use std::{ffi::CStr, fs};
+use std::{collections, ffi::CStr, fs, io::Write};
 
 use ash::{prelude::VkResult, vk};
 use gpu_allocator::MemoryLocation;
-use itertools::Itertools;
+use itertools::{iproduct, Format, Itertools};
 
 use context::DeviceContext;
 use nalgebra::{Matrix3, Point3, Vector3};
 use pipeline::{Pipeline, Shader};
 use resource::{Image, ImageView, ReadBackBuffer, UploadBuffer};
-use scene::material::{Material, MaterialType};
+use scene::{material::{Material, MaterialType}, MaterialHandle};
 
-use crate::{pipeline::{ResourceLayout, ShaderData}, scene::{camera::Camera, light::Environment, Scene}, shader_binding_table::ShaderBindingTableDescription, util::as_u8_slice};
+use crate::{pipeline::ResourceLayout, scene::{camera::Camera, light::Environment, Scene}, shader_binding_table::ShaderBindingTableDescription, util::as_u8_slice};
 
 pub mod util;
 pub mod context;
@@ -204,10 +204,9 @@ impl<'ctx> SampleTarget<'ctx> {
 
 // }
 
-unsafe fn render<'ctx>(context: &'ctx DeviceContext, scene: &Scene, image: &Image<'ctx>) -> VkResult<()> {
+unsafe fn render<'ctx>(context: &'ctx DeviceContext, scene: &Scene, image: &Image<'ctx>, sample_count: u64) -> VkResult<f32> {
 
     const SAMPLES_IN_FLIGHT: u64 = 2;
-    const SAMPLE_COUNT: u64 = 8192;
 
     let descriptor_set = scene.create_descriptor_set(ImageView::new(image, vk::Format::R32G32B32A32_SFLOAT, 0..1, 0..1)?)?;
 
@@ -248,7 +247,7 @@ unsafe fn render<'ctx>(context: &'ctx DeviceContext, scene: &Scene, image: &Imag
 
     let start_time = std::time::Instant::now();
 
-    for i in 0..SAMPLE_COUNT {
+    for i in 0..sample_count {
         let signal_point = i + 1;
         
         let j = (i % SAMPLES_IN_FLIGHT) as usize;
@@ -332,18 +331,20 @@ unsafe fn render<'ctx>(context: &'ctx DeviceContext, scene: &Scene, image: &Imag
     
     let wait_info = vk::SemaphoreWaitInfo::builder()
         .semaphores(std::slice::from_ref(&semaphore))
-        .values(std::slice::from_ref(&SAMPLE_COUNT));
+        .values(std::slice::from_ref(&sample_count));
 
     context.device().wait_semaphores(&wait_info, u64::MAX)?;
 
     let end_time = std::time::Instant::now();
+    
+    let render_time_seconds = (end_time - start_time).as_secs_f32();
 
-    println!("time: {}s", (end_time - start_time).as_secs_f64());
+    println!("time: {}s", render_time_seconds);
 
     context.device().destroy_semaphore(semaphore, None);
     context.device().destroy_command_pool(cmd_pool, None);
 
-    Ok(())
+    Ok(render_time_seconds)
 }
 
 fn load_environment_map<'ctx>(context: &'ctx DeviceContext) -> VkResult<Image<'ctx>> {
@@ -538,11 +539,11 @@ fn run_furnace_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     fs::create_dir_all(save_path).unwrap();
 
     let camera = Camera::new(
-        Point3::new(0.0, 0.0, 5.0),
+        Point3::new(0.0, 0.0, 2.0),
         Matrix3::new(
-            1.0, 0.0, -0.5,
-            0.0, -1.0, 0.5,
-            0.0, 0.0, -1.0,
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
         )
     );
     let sample_target = SampleTarget::new(context, img_width, img_height).unwrap();
@@ -562,7 +563,7 @@ fn run_furnace_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     ];
     
     let roughnesses = [
-        0.01, 0.1, 1.0,
+        0.01, 0.04, 0.16, 0.64,
     ];
 
     let mut materials = vec![];
@@ -589,7 +590,7 @@ fn run_furnace_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     
             scene.set_instance_material(0, material.1);
     
-            render(context, &scene, &sample_target.image)?;
+            render(context, &scene, &sample_target.image, 512)?;
             
             let img_data = sample_target.download()?;
 
@@ -606,6 +607,7 @@ fn run_furnace_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     Ok(())
 }
 
+
 fn run_refraction_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
 
     let img_width = 512;
@@ -613,8 +615,6 @@ fn run_refraction_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     let save_path = "images/refract";
 
     fs::create_dir_all(save_path).unwrap();
-    
-
 
     let environment_map = load_environment_map(&context).unwrap();
     let camera = Camera::look_at(
@@ -651,7 +651,6 @@ fn run_refraction_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     scene.set_instance_material(0, backdrop_mat);
     scene.set_instance_material(1, inside_mat);
 
-
     let material_types = [
         ("ss_ndf", "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ss_ndf_sample.rcall.spv"),
         ("ss_vndf", "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ss_vndf_sample.rcall.spv"),
@@ -660,7 +659,7 @@ fn run_refraction_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     ];
     
     let roughnesses = [
-        0.01, 0.1, 1.0,
+        0.01, 0.04, 0.16, 0.64, 1.28,
     ];
 
     let mut materials = vec![];
@@ -687,7 +686,7 @@ fn run_refraction_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     
             scene.set_instance_material(2, material.1);
     
-            render(context, &scene, &sample_target.image)?;
+            render(context, &scene, &sample_target.image, 512)?;
             
             let img_data = sample_target.download()?;
 
@@ -703,6 +702,372 @@ fn run_refraction_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     }
     Ok(())
 }
+
+fn run_convergence_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
+    
+    let img_width = 256;
+    let img_height = 256;
+    
+    let environment_map = load_environment_map(&context).unwrap();
+    let camera = Camera::look_at(
+        Point3::new(-1.0, 2.0, 4.0),
+        Point3::new(0.0, 1.0, 0.0),
+        Vector3::new(0.0, 1.0, 0.0),
+        1.0,
+        std::f32::consts::PI / 4.0,
+    );
+    let sample_target = SampleTarget::new(&context, img_width, img_height).unwrap();
+
+    let mut scene = Scene::new(&context);
+
+    scene.load("resources/mitsuba.gltf", context, None)?;
+
+    scene.set_camera(camera);
+    let environment_map_handle = scene.add_texture(environment_map);
+    scene.set_environment(Environment::spherical(context, environment_map_handle)?);
+
+    let lambertian_mat_type = scene.add_material_type(load_material_type(context, "shader_bin/lambertian_evaluate.rcall.spv", "shader_bin/lambertian_sample.rcall.spv")?);
+
+    let backdrop_mat = scene.add_material(Material {
+        ior: 1.54,
+        roughness: 0.5,
+        material_type: lambertian_mat_type,
+    });
+
+    let inside_mat = scene.add_material(Material {
+        ior: 1.54,
+        roughness: 0.8,
+        material_type: lambertian_mat_type,
+    });
+
+    scene.set_instance_material(0, backdrop_mat);
+    scene.set_instance_material(1, inside_mat);
+
+    let material_types = [
+        ("ss_ndf",  scene.add_material_type(load_material_type(context, "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ss_ndf_sample.rcall.spv")?)),
+        ("ss_vndf", scene.add_material_type(load_material_type(context, "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ss_vndf_sample.rcall.spv")?)),
+    ];
+    
+    let roughnesses = [
+        0.01, 0.04, 0.16, 0.64
+    ];
+
+
+    for roughness in roughnesses {
+
+        let materials = material_types.map(|material_type| 
+            scene.add_material(Material {
+                ior: 1.54,
+                roughness,
+                material_type: material_type.1,
+            })
+        );
+
+        unsafe {
+            scene.set_instance_material(2, materials[0]);
+
+            render(context, &scene, &sample_target.image, 1 << 20)?;
+            let reference_rgba = sample_target.download()?;
+
+            let reference_rgba_u8 = reference_rgba.iter()
+                .map(|f| (f * 255.0).clamp(0.0, 255.0) as u8)
+                .collect_vec();
+
+            let reference = image::RgbaImage::from_vec(img_width, img_height, reference_rgba_u8).unwrap();
+
+            reference.save(format!("images/convergence/reference_r{}.png", (100.0 * roughness).round() as u32)).unwrap();
+
+            let reference_gray = reference_rgba.iter()
+                .copied()
+                .array_chunks::<4>()
+                .map(rgba_to_gray)
+                .collect_vec();
+
+            let file_name = format!("images/convergence/mse_r{}.txt", (100.0 * roughness).round() as u32);
+            let mut file = std::fs::File::create(file_name).unwrap();
+
+            for &material in &materials {
+                
+                scene.set_instance_material(2, material);
+
+                for j in 0..14 {
+                    render(context, &scene, &sample_target.image, 1 << j)?;
+
+                    let rgba = sample_target.download()?;
+                    
+                    let gray = rgba.iter()
+                        .copied()
+                        .array_chunks::<4>()
+                        .map(rgba_to_gray)
+                        .collect_vec();
+
+                    let sse = gray.iter()
+                        .zip(reference_gray.iter())
+                        .map(|(a, b)| (b - a) * (b - a))
+                        .sum::<f32>();
+
+                    let mse = sse / gray.len() as f32;
+                    write!(file, "{} ", mse).unwrap();
+                }
+
+                write!(file, "\n").unwrap();
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn run_ss_equal_error_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
+
+    let img_width = 256;
+    let img_height = 256;
+    
+    let environment_map = load_environment_map(&context).unwrap();
+    let camera = Camera::look_at(
+        Point3::new(-1.0, 2.0, 4.0),
+        Point3::new(0.0, 1.0, 0.0),
+        Vector3::new(0.0, 1.0, 0.0),
+        1.0,
+        std::f32::consts::PI / 4.0,
+    );
+    let sample_target = SampleTarget::new(&context, img_width, img_height).unwrap();
+
+    let mut scene = Scene::new(&context);
+
+    scene.load("resources/mitsuba.gltf", context, None)?;
+
+    scene.set_camera(camera);
+    let environment_map_handle = scene.add_texture(environment_map);
+    scene.set_environment(Environment::spherical(context, environment_map_handle)?);
+
+    let lambertian_mat_type = scene.add_material_type(load_material_type(context, "shader_bin/lambertian_evaluate.rcall.spv", "shader_bin/lambertian_sample.rcall.spv")?);
+
+    let backdrop_mat = scene.add_material(Material {
+        ior: 1.54,
+        roughness: 0.5,
+        material_type: lambertian_mat_type,
+    });
+
+    let inside_mat = scene.add_material(Material {
+        ior: 1.54,
+        roughness: 0.8,
+        material_type: lambertian_mat_type,
+    });
+
+    scene.set_instance_material(0, backdrop_mat);
+    scene.set_instance_material(1, inside_mat);
+
+    let material_types = [
+        ("ss_ndf",  scene.add_material_type(load_material_type(context, "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ss_ndf_sample.rcall.spv")?)),
+        ("ss_vndf", scene.add_material_type(load_material_type(context, "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ss_vndf_sample.rcall.spv")?)),
+    ];
+    
+    let roughness = 0.16;
+
+    let ndf_material = scene.add_material(Material {
+        ior: 1.54,
+        roughness,
+        material_type: material_types[0].1,
+    });
+
+    let vndf_material = scene.add_material(Material {
+        ior: 1.54,
+        roughness,
+        material_type: material_types[1].1,
+    });
+
+    let reference_sample_count = 1 << 20;
+    let target_mse = 0.0001;
+    let tolerance = 10;
+
+    unsafe {
+
+        scene.set_instance_material(2, ndf_material);
+        render(context, &scene, &sample_target.image, reference_sample_count)?; 
+        let reference_rgba = sample_target.download()?;
+
+        let mut measure = |material: MaterialHandle, sample_count: u64| -> VkResult<(f32, f32, Vec<f32>)> {
+            scene.set_instance_material(2, material);
+            let time = render(context, &scene, &sample_target.image, sample_count)?;
+            let rgba = sample_target.download()?;
+            let mse = mse_rgb(&rgba, &reference_rgba);
+
+            Ok((time, mse, rgba))
+        };
+
+        let mut bisection = |material: MaterialHandle| -> VkResult<u64> {
+
+            let mut sample_count_a = 1;
+            let mut sample_count_b = 10000;
+
+            loop {
+                let sample_count = (sample_count_a + sample_count_b) / 2;
+                
+                if (sample_count_b - sample_count_a) / 2 < tolerance {
+                    return Ok(sample_count);
+                } 
+
+                let (_, mse, _) = measure(material, sample_count)?;
+
+                if mse > target_mse {   
+                    sample_count_a = sample_count;
+                } else {
+                    sample_count_b = sample_count;
+                }
+            };
+        };
+
+        let ndf_sample_count = bisection(ndf_material)?;
+        let vndf_sample_count = bisection(vndf_material)?;
+
+        let (ndf_time, ndf_mse, ndf_rgba) = measure(ndf_material, ndf_sample_count)?;
+        let (vndf_time, vndf_mse, vndf_rgba) = measure(vndf_material, vndf_sample_count)?;
+
+        println!("mse: {},\tsamples: {},\ttime: {}", ndf_mse, ndf_sample_count, ndf_time);    
+        println!("mse: {},\tsamples: {},\ttime: {}", vndf_mse, vndf_sample_count, vndf_time);    
+        
+        let save = |rgba: Vec<f32>, file: &str| {
+            let rgba_u8 = rgba.iter()
+            .copied()
+            .array_chunks::<4>()
+            .flat_map(post_process_orb)
+            .collect_vec();
+        
+            image::RgbaImage::from_vec(img_width, img_height, rgba_u8).unwrap()
+                .save(file).unwrap();
+        };
+
+        save(reference_rgba, "images/ss_equal_error/reference.png");
+        save(ndf_rgba, "images/ss_equal_error/ndf.png");
+        save(vndf_rgba, "images/ss_equal_error/vndf.png");
+    }
+
+    
+
+    
+    Ok(())
+}
+
+fn run_ms_ss_comparison_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
+
+    let img_width = 256;
+    let img_height = 256;
+    let sample_count = 1 << 16;
+    
+    let environment_map = load_environment_map(&context).unwrap();
+    let camera = Camera::look_at(
+        Point3::new(-1.0, 2.0, 4.0),
+        Point3::new(0.0, 1.0, 0.0),
+        Vector3::new(0.0, 1.0, 0.0),
+        1.0,
+        std::f32::consts::PI / 4.0,
+    );
+    let sample_target = SampleTarget::new(&context, img_width, img_height).unwrap();
+
+    let mut scene = Scene::new(&context);
+
+    scene.load("resources/mitsuba.gltf", context, None)?;
+
+    scene.set_camera(camera);
+    let environment_map_handle = scene.add_texture(environment_map);
+    scene.set_environment(Environment::spherical(context, environment_map_handle)?);
+
+    let lambertian_mat_type = scene.add_material_type(load_material_type(context, "shader_bin/lambertian_evaluate.rcall.spv", "shader_bin/lambertian_sample.rcall.spv")?);
+
+    let backdrop_mat = scene.add_material(Material {
+        ior: 1.54,
+        roughness: 0.5,
+        material_type: lambertian_mat_type,
+    });
+
+    let inside_mat = scene.add_material(Material {
+        ior: 1.54,
+        roughness: 0.8,
+        material_type: lambertian_mat_type,
+    });
+
+    scene.set_instance_material(0, backdrop_mat);
+    scene.set_instance_material(1, inside_mat);
+
+    let ss_material_type = scene.add_material_type(load_material_type(context, "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ss_vndf_sample.rcall.spv")?);
+    let ms_material_type = scene.add_material_type(load_material_type(context, "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ms_dupuy_sample.rcall.spv")?);
+    
+    let roughnesses = [
+        0.01, 0.04, 0.16, 0.64
+    ];
+    
+    let timings_filename = format!("images/ms_ss_comparison/timings.txt");
+    let mut timings_file = std::fs::File::create(timings_filename).unwrap();
+
+    for roughness in roughnesses {
+
+        unsafe {
+            
+            let ss_material = scene.add_material(Material {
+                ior: 1.54,
+                roughness,
+                material_type: ss_material_type,
+            });
+
+            let ms_material = scene.add_material(Material {
+                ior: 1.54,
+                roughness,
+                material_type: ms_material_type,
+            });
+
+            scene.set_instance_material(2, ss_material);
+            let ss_time = render(context, &scene, &sample_target.image, sample_count)?;
+            let ss_rgba = sample_target.download()?;
+            
+            scene.set_instance_material(2, ms_material);
+            let ms_time = render(context, &scene, &sample_target.image, sample_count)?;
+            let ms_rgba = sample_target.download()?;
+
+            let ss_rgba_u8 = ss_rgba.iter()
+                .copied()
+                .array_chunks::<4>()
+                .flat_map(post_process_orb)
+                .collect_vec();
+
+            let ss_filename = format!("images/ms_ss_comparison/ss_r{}.png", (100.0 * roughness).round() as u32);
+
+            image::RgbaImage::from_vec(img_width, img_height, ss_rgba_u8).unwrap()
+                .save(ss_filename).unwrap();
+
+            let ms_rgba_u8 = ms_rgba.iter()
+                .copied()
+                .array_chunks::<4>()
+                .flat_map(post_process_orb)
+                .collect_vec();
+
+            let ms_filename = format!("images/ms_ss_comparison/ms_r{}.png", (100.0 * roughness).round() as u32);
+
+            image::RgbaImage::from_vec(img_width, img_height, ms_rgba_u8).unwrap()
+                .save(ms_filename).unwrap();
+
+            let diff_rgba = ss_rgba.iter().copied()
+                .zip(ms_rgba.iter().copied())
+                .array_chunks::<4>()
+                .flat_map(|[r, g, b, _]| [r.1 - r.0, g.1 - g.0, b.1 - b.0, 1.0])
+                .collect_vec();
+
+            let diff_rgba_u8 = diff_rgba.iter()
+                .map(|c| (c.clamp(0.0, 1.0) * 255.0) as u8)
+                .collect_vec();
+
+            let diff_filename = format!("images/ms_ss_comparison/diff_r{}.png", (100.0 * roughness).round() as u32);
+
+            image::RgbaImage::from_vec(img_width, img_height, diff_rgba_u8).unwrap()
+                .save(diff_filename).unwrap();
+
+            
+            write!(timings_file, "{} {}\n", ss_time, ms_time).unwrap();
+        }
+    }
+
+    Ok(())
+} 
 
 fn compare_materials<'ctx>(context: &'ctx DeviceContext, sample_shader_1: &str, sample_shader_2: &str) -> VkResult<()> {
     unsafe {
@@ -760,14 +1125,12 @@ fn compare_materials<'ctx>(context: &'ctx DeviceContext, sample_shader_1: &str, 
         scene.load("resources/sphere.gltf", &context, None)?;
 
         scene.set_instance_material(0, mat_1);
-        render(&context, &scene, &sample_target.image)?;
+        render(&context, &scene, &sample_target.image, 512)?;
         let img_data_1 = sample_target.download()?;
 
         scene.set_instance_material(0, mat_2);
-        render(&context, &scene, &sample_target.image)?;
+        render(&context, &scene, &sample_target.image, 512)?;
         let img_data_2 = sample_target.download()?;
-
-        let rgba_to_gray = |pixel: [f32; 4]| (pixel[0] + pixel[1] + pixel[2]) / 3.0;
 
         let diff_factor = 10.0;
 
@@ -817,7 +1180,7 @@ fn run_orb_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
 
         let img_width = 512;
         let img_height = 512;
-    
+        
         let sample_target = SampleTarget::new(&context, img_width, img_height).unwrap();
 
         let mut scene = Scene::new(&context);
@@ -846,7 +1209,7 @@ fn run_orb_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
 
         let microfacet_mat_type = scene.add_material_type(MaterialType {
             evaluation_shader: Shader::new(&context, "shader_bin/microfacet_evaluate.rcall.spv", entry_point_name.to_owned())?,
-            sample_shader: Shader::new(&context, "shader_bin/ss_vndf_sample.rcall.spv", entry_point_name.to_owned())?,
+            sample_shader: Shader::new(&context, "shader_bin/ms_heitz_sample.rcall.spv", entry_point_name.to_owned())?,
         });
 
         let backdrop_mat = scene.add_material(Material {
@@ -873,7 +1236,7 @@ fn run_orb_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
         scene.set_instance_material(1, inside_mat);
         scene.set_instance_material(2, shell_mat);
 
-        render(&context, &scene, &sample_target.image)?;
+        render(&context, &scene, &sample_target.image, 512)?;
         let img_data = sample_target.download()?;
 
 
@@ -896,20 +1259,60 @@ fn run_orb_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
 
         image::RgbaImage::from_vec(img_width, img_height, processed_img_data).unwrap()
             .save("images/orb.png").unwrap();
-
     }
     Ok(())
 
+}
+
+fn mse_rgb(image_rgba: &[f32], reference_rgba: &[f32]) -> f32 {
+
+    let image_rgb = image_rgba.iter()
+        .copied()
+        .array_chunks::<4>()
+        .flat_map(rgba_to_rgb);
+
+    let reference_rgb = reference_rgba.iter()
+        .copied()
+        .array_chunks::<4>()
+        .flat_map(rgba_to_rgb);
+
+    let sse = image_rgb.zip(reference_rgb)
+        .map(|(a, b)| (a - b) * (a - b))
+        .sum::<f32>();
+
+    let count = 3 * image_rgba.len() / 4;
+
+    sse / count as f32
+} 
+
+fn rgba_to_rgb([r, g, b, _]: [f32; 4]) -> [f32; 3] {
+    [r, g, b]
+}
+
+fn rgba_to_gray([r, g, b, _]: [f32; 4]) -> f32 {
+    (r + g + b) / 3.0
+}
+
+fn post_process_orb([r, g, b, a]: [f32; 4]) -> [u8; 4] {
+
+    // gamma correction
+    let [r, g, b] = [r, g, b].map(|c| c.powf(1.0 / 2.2));
+
+    [r, g, b, a].map(|c| (c.clamp(0.0, 1.0) * 255.0) as u8)
 }
 
 fn main() {
 
     let context = DeviceContext::new().expect("failed to create device context");
 
-    // run_refraction_tests(&context).unwrap();
-    // run_furnace_tests(&context).unwrap();
     
-    run_orb_test(&context).unwrap();
+    // run_refraction_tests(&context).unwrap();
+    // run_convergence_tests(&context).unwrap();
+    // run_ss_equal_error_test(&context).unwrap();
 
-    // compare_materials(&context, "shader_bin/ss_vndf_sample.rcall.spv", "shader_bin/ms_dupuy_sample.rcall.spv").unwrap();
+    // run_ms_ss_comparison_tests(&context).unwrap();
+    run_furnace_tests(&context).unwrap();
+
+    
+    // run_orb_test(&context).unwrap();
 }

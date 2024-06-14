@@ -79,7 +79,7 @@ void main() {
         return;
     }
     
-    float geometry_factor = maskingShadowingGgx(abs(wi.z), abs(wo.z), alpha_sq) / geometryGgx(abs(wo.z), alpha_sq);
+    float geometry_factor = maskingShadowingGgx(abs(wi.z), abs(wo.z), alpha_sq) / maskingGgx(abs(wo.z), alpha_sq);
     
     evaluation.weight = vec3(geometry_factor);
     evaluation.wi = wi;

@@ -14,7 +14,6 @@ struct Camera {
     vec3 position;
 };
 
-
 layout(shaderRecordEXT, std430) buffer sbtData {
     Camera camera;
 };
@@ -25,25 +24,13 @@ layout(push_constant) uniform Params {
 
 layout(location = 0) rayPayloadEXT pathInfo path_info;
 
-vec3 sampleVndfStdGgx(vec3 wi, inout uint rand_state) {
+bool anyNan(vec3 v) {
+    return isnan(v.x) || isnan(v.y) || isnan(v.z);
+} 
 
-    float phi = 2.0 * pi * rnd(rand_state);
-
-    float z = (1.0 - rnd(rand_state)) * (1.0 + wi.z) - wi.z;
-    float sin_theta = sqrt(max(1.0 - z * z, 0.0));
-    float x = sin_theta * cos(phi);
-    float y = sin_theta * sin(phi);
-
-    return wi + vec3(x, y, z); // unnormalized!
+bool anyInf(vec3 v) {
+    return isinf(v.x) || isinf(v.y) || isinf(v.z);
 }
-
-vec3 sampleVndfGgx(vec3 wi, float alpha, inout uint rand_state) {
-    vec3 wi_std = normalize(vec3(wi.xy * alpha, wi.z));
-    vec3 wm_std = sampleVndfStdGgx(wi_std, rand_state);
-
-    return normalize(vec3(wm_std.xy * alpha, wm_std.z));
-}
-
 
 void main() {
 
@@ -53,8 +40,6 @@ void main() {
     uint launch_index = position.y * size.x + position.x;
     path_info.rand_state = tea(params.sample_index, launch_index);
     path_info.error_state = 0;
-
-
 
     vec2 uv = (vec2(position) + vec2(rnd(path_info.rand_state), rnd(path_info.rand_state))) / vec2(size);
     
@@ -66,7 +51,6 @@ void main() {
     path_info.radiance = vec3(0.0);
     path_info.channel = 3u;
     path_info.emit = 1u;
-   
 
     const uint ray_flags = gl_RayFlagsOpaqueEXT;
     const uint cull_mask = 0xff;
@@ -77,7 +61,7 @@ void main() {
             break;
         }
 
-        traceRayEXT(tlas,     // acceleration structure
+        traceRayEXT(tlas,           // acceleration structure
                 ray_flags,          // rayFlags
                 cull_mask,          // cullMask
                 0,                  // sbtRecordOffset
@@ -91,15 +75,19 @@ void main() {
         );
     }
 
+    if (anyNan(path_info.radiance) || anyInf(path_info.radiance)) {
+        return;
+    }
+
+    if (path_info.error_state != 0) {
+        imageStore(image, position, vec4(1000.0, 0.0, 1000.0, 1.0));
+        return;
+    }
+
     float sample_weight = 1.0 / float(params.sample_index + 1);
 
     vec3 prev = imageLoad(image, position).xyz;
     vec3 new = mix(prev, path_info.radiance, sample_weight);
 
     imageStore(image, position, vec4(new, 1.0));
-
-    if (path_info.error_state != 0) {
-        imageStore(image, position, vec4(1000.0, 0.0, 1000.0, 1.0));    
-    }
-
 }
