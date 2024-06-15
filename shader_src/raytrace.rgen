@@ -5,6 +5,7 @@
 
 #include "../shader_include/definitions.glsl"
 #include "../shader_include/random.glsl"
+#include "../shader_include/util.glsl"
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 layout(set = 0, binding = 1, rgba32f) uniform image2D image;
@@ -23,14 +24,6 @@ layout(push_constant) uniform Params {
 } params;
 
 layout(location = 0) rayPayloadEXT pathInfo path_info;
-
-bool anyNan(vec3 v) {
-    return isnan(v.x) || isnan(v.y) || isnan(v.z);
-} 
-
-bool anyInf(vec3 v) {
-    return isinf(v.x) || isinf(v.y) || isinf(v.z);
-}
 
 void main() {
 
@@ -73,6 +66,16 @@ void main() {
                 tmax,               // ray max range
                 0                   // payload (location = 0)
         );
+
+        float terminate_prob = 1.0 - maxComponent(path_info.weight);
+
+        if (terminate_prob > 0.0) {
+            float u = rnd(path_info.rand_state);
+            if (u < terminate_prob) {
+                break;
+            }
+            path_info.weight /= 1.0 - terminate_prob;
+        }
     }
 
     if (anyNan(path_info.radiance) || anyInf(path_info.radiance)) {

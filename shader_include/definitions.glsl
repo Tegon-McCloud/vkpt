@@ -6,7 +6,7 @@ const float pi = 3.14159265359;
 const float tmin = 1e-3;
 const float tmax = 1e8;
 
-const uint max_depth = 32;
+const uint max_depth = 64;
 
 struct pathInfo {
     vec3 position;

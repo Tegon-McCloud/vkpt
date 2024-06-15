@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, ffi::CStr, ops::Range, path::Path};
+use std::{ffi::CStr, ops::Range, path::Path};
 
 use ash::{vk, prelude::VkResult};
 use nalgebra::{Matrix3x4, Matrix4};
@@ -619,13 +619,13 @@ impl<'ctx> Scene<'ctx> {
 
             let evaluation_shader = Shader::new(
                 &self.context,
-                "shader_bin/microfacet_evaluate.rcall.spv",
+                "shader_bin/ss_evaluate.rcall.spv",
                 entry_point_name.to_owned(),
             )?;
     
             let sample_shader = Shader::new(
                 &self.context,
-                "shader_bin/ms_heitz_sample.rcall.spv",
+                "shader_bin/ss_evaluate.rcall.spv",
                 entry_point_name.to_owned(),
             )?;
             

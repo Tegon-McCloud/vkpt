@@ -91,6 +91,87 @@ float maskingShadowingGgx(float cos_theta_i, float cos_theta_o, float alpha_sq) 
     return 1.0 / (1.0 + lambdaGgx(cos_theta_i, alpha_sq) + lambdaGgx(cos_theta_o, alpha_sq));
 }
 
+float conductorBsdfCosGgx(vec3 wi, vec3 wo, float ior, float alpha_sq) {
+
+    float cos_theta_i = wi.z;
+    float cos_theta_o = wo.z;
+
+    vec3 wm = normalize(sign(cos_theta_i)*(wo + wi));
+
+    float cos_theta_m = wm.z;
+    if (cos_theta_m < 1e-5) {
+        return 0.0;
+    }
+
+    float distribution = ndfGgx(cos_theta_m, alpha_sq);
+    float geometry = maskingShadowingGgx(abs(cos_theta_i), abs(cos_theta_o), alpha_sq);
+
+    return distribution * geometry / (4.0 * abs(cos_theta_o));
+}
+
+float dielectricBsdfCosGgx(vec3 wi, vec3 wo, float ior, float alpha_sq) {
+    
+    float cos_theta_i = wi.z;
+    float cos_theta_o = wo.z;
+
+    bool outside = cos_theta_i > 0.0;
+
+    float ior_rel = outside ? 1.0 / ior : ior;
+    
+    bool transmit = cos_theta_i * cos_theta_o < 0.0;
+
+    vec3 wm_unnormalized = transmit ? -(ior_rel * wi + wo) : sign(cos_theta_i) * (wi + wo);
+    vec3 wm = normalize(wm_unnormalized);
+
+    if (wm.z < 0.0) { // pick wm so it is consistent with the macro normal
+        wm = -wm;
+    }
+
+    float cos_theta_m = wm.z;
+    if (cos_theta_m < 1e-5) {
+        return 0.0;
+    }
+
+    float cos_theta_im = dot(wm, wi);
+    if (cos_theta_im * cos_theta_i < 0.0) {
+        return 0.0;
+    }
+
+    float cos_theta_om = dot(wm, wo);
+    float cos_ratio_o = cos_theta_om / cos_theta_o;
+    if (cos_ratio_o <= 0.0) {
+        return 0.0;
+    }
+
+    float fresnel = 1.0;
+    if (transmit) {
+        fresnel = 1.0 - reflectanceFresnel(abs(cos_theta_im), abs(cos_theta_om), ior_rel, 1.0);
+    } else {
+        float sin_theta_tm_sq = ior_rel * ior_rel * (1.0 - cos_theta_im * cos_theta_im);
+
+        if (sin_theta_tm_sq < 1.0) {
+            float cos_theta_tm = sqrt(1.0 - sin_theta_tm_sq);
+            fresnel = reflectanceFresnel(abs(cos_theta_im), cos_theta_tm, ior_rel, 1.0);
+        }
+    }
+
+    float cos_weight;
+
+    if (transmit) {
+        float a = outside ? cos_theta_im + ior * cos_theta_om : ior * cos_theta_im + cos_theta_om;
+        cos_weight = cos_ratio_o * abs(cos_theta_im)  / (a * a);
+    } else {
+        cos_weight = 1.0 / (4.0 * abs(cos_theta_om));
+    }
+
+    float distribution = ndfGgx(cos_theta_m, alpha_sq);
+    float geometry = maskingShadowingGgx(abs(cos_theta_i), abs(cos_theta_o), alpha_sq);
+
+    return fresnel * distribution * geometry * cos_weight;
+}
+
+
+
 float heightCdfUniform(float height) {
     return clamp(0.5 * (height + 1.0), 0.0, 1.0);
 }
@@ -106,7 +187,7 @@ float sampleHeightGgxUniform(
     float alpha_sq,
     inout uint rand_state
 ) {
-
+    // lambda function has numerical issues in these cases
     if (abs(w.z) < 0.001) {
         escaped = false;
         return height;

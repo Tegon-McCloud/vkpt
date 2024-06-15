@@ -45,7 +45,7 @@ void main() {
 
     float cos_theta_m = wm.z;
     if (cos_theta_m < 1e-5) {
-        evaluation.weight = vec3(0.0);
+        evaluation.weight = vec3(0.0, 0.0, 0.0);
         return;
     }
 
@@ -83,7 +83,7 @@ void main() {
     }
     
     float distribution = ndfGgx(wm.z, alpha_sq);
-    float geometry = maskingGgx(abs(cos_theta_i), alpha_sq) * maskingGgx(abs(cos_theta_o), alpha_sq);
+    float geometry = maskingShadowingGgx(abs(cos_theta_i), abs(cos_theta_o), alpha_sq);
     
     evaluation.weight = vec3(fresnel * distribution * geometry * cos_weight);
 }

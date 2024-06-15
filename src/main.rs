@@ -530,83 +530,6 @@ fn load_material_type<'ctx>(context: &'ctx DeviceContext, eval_shader_file: &str
     }
 }
 
-fn run_furnace_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
-    
-    let img_width = 512;
-    let img_height = 512;
-    let save_path = "images/furnace";
-
-    fs::create_dir_all(save_path).unwrap();
-
-    let camera = Camera::new(
-        Point3::new(0.0, 0.0, 2.0),
-        Matrix3::new(
-            1.0, 0.0, 0.0,
-            0.0, 1.0, 0.0,
-            0.0, 0.0, 1.0,
-        )
-    );
-    let sample_target = SampleTarget::new(context, img_width, img_height).unwrap();
-
-    let mut scene = Scene::new(context);
-
-    scene.load("resources/sphere.gltf", context, None)?;
-    
-    scene.set_camera(camera);
-    scene.set_environment(Environment::constant(context)?);
-
-    let material_types = [
-        ("ss_ndf", "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ss_ndf_sample.rcall.spv"),
-        ("ss_vndf", "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ss_vndf_sample.rcall.spv"),
-        ("ms_heitz", "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ms_heitz_sample.rcall.spv"),
-        ("ms_dupuy", "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ms_dupuy_sample.rcall.spv"),
-    ];
-    
-    let roughnesses = [
-        0.01, 0.04, 0.16, 0.64,
-    ];
-
-    let mut materials = vec![];
-
-    for material_type in material_types {
-
-        let material_type_handle = scene.add_material_type(load_material_type(context, material_type.1, material_type.2)?);
-
-        for roughness in roughnesses {
-
-            let material_handle = scene.add_material(Material {
-                ior: 1.54,
-                roughness,
-                material_type: material_type_handle,
-            });
-            
-            let file_path = format!("{}/{}_r{}.png", save_path, material_type.0, (100.0 * roughness).round() as u32);
-
-            materials.push((file_path, material_handle));
-        }
-    }
-    unsafe {    
-        for material in materials {
-    
-            scene.set_instance_material(0, material.1);
-    
-            render(context, &scene, &sample_target.image, 512)?;
-            
-            let img_data = sample_target.download()?;
-
-            let img_data_u8 = img_data.iter()
-                .map(|lin| lin.powf(1.0 / 2.2))
-                .map(|f| (f * 255.0).clamp(0.0, 255.0) as u8)
-                .collect_vec();
-
-            let img = image::RgbaImage::from_vec(img_width, img_height, img_data_u8).unwrap();
-
-            img.save(material.0).unwrap();
-        }
-    }
-    Ok(())
-}
-
 
 fn run_refraction_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
 
@@ -652,14 +575,15 @@ fn run_refraction_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     scene.set_instance_material(1, inside_mat);
 
     let material_types = [
-        ("ss_ndf", "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ss_ndf_sample.rcall.spv"),
-        ("ss_vndf", "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ss_vndf_sample.rcall.spv"),
-        ("ms_heitz", "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ms_heitz_sample.rcall.spv"),
-        ("ms_dupuy", "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ms_dupuy_sample.rcall.spv"),
+        ("ss_uniform", "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ss_sample_uniform.rcall.spv"),
+        // ("ss_ndf", "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ss_sample_ndf.rcall.spv"),
+        // ("ss_vndf", "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ss_sample_vndf.rcall.spv"),
+        // ("ms_heitz", "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ms_sample_heitz.rcall.spv"),
+        // ("ms_dupuy", "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ms_sample_dupuy.rcall.spv"),
     ];
     
     let roughnesses = [
-        0.01, 0.04, 0.16, 0.64, 1.28,
+        0.01, 0.04, 0.16, 0.64,
     ];
 
     let mut materials = vec![];
@@ -686,7 +610,7 @@ fn run_refraction_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     
             scene.set_instance_material(2, material.1);
     
-            render(context, &scene, &sample_target.image, 512)?;
+            render(context, &scene, &sample_target.image, 1 << 12)?;
             
             let img_data = sample_target.download()?;
 
@@ -705,9 +629,12 @@ fn run_refraction_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
 
 fn run_convergence_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     
-    let img_width = 256;
-    let img_height = 256;
-    
+    let img_width = 512;
+    let img_height = 512;
+    let save_path = "images/convergence";
+
+    fs::create_dir_all(save_path).unwrap();
+
     let environment_map = load_environment_map(&context).unwrap();
     let camera = Camera::look_at(
         Point3::new(-1.0, 2.0, 4.0),
@@ -744,73 +671,62 @@ fn run_convergence_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     scene.set_instance_material(1, inside_mat);
 
     let material_types = [
-        ("ss_ndf",  scene.add_material_type(load_material_type(context, "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ss_ndf_sample.rcall.spv")?)),
-        ("ss_vndf", scene.add_material_type(load_material_type(context, "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ss_vndf_sample.rcall.spv")?)),
+        // ("ss_uniform", scene.add_material_type(load_material_type(context, "shader_bin/ss_evaluate.", sample_shader_file)))
+        ("ss_ndf",  scene.add_material_type(load_material_type(context, "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ss_sample_ndf.rcall.spv")?)),
+        ("ss_vndf", scene.add_material_type(load_material_type(context, "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ss_sample_vndf.rcall.spv")?)),
     ];
     
     let roughnesses = [
         0.01, 0.04, 0.16, 0.64
     ];
 
-
+    let ior = 1.54;
+    
     for roughness in roughnesses {
 
-        let materials = material_types.map(|material_type| 
-            scene.add_material(Material {
+        let reference_material = scene.add_material(Material {
+            ior, 
+            roughness,
+            material_type: material_types[0].1,
+        });
+
+        scene.set_instance_material(2, reference_material);
+        unsafe { render(context, &scene, &sample_target.image, 1 << 20)? };
+
+        let reference_rgba = sample_target.download()?;
+
+        let reference_rgba_u8 = reference_rgba.iter()
+            .map(|f| (f * 255.0).clamp(0.0, 255.0) as u8)
+            .collect_vec();
+
+        let reference = image::RgbaImage::from_vec(img_width, img_height, reference_rgba_u8).unwrap();
+
+        reference.save(format!("{}/reference_r{}.png", save_path, (100.0 * roughness).round() as u32)).unwrap();
+
+        for (material_type_name, material_type) in material_types {
+
+            let material = scene.add_material(Material {
                 ior: 1.54,
                 roughness,
-                material_type: material_type.1,
-            })
-        );
+                material_type,
+            });
 
-        unsafe {
-            scene.set_instance_material(2, materials[0]);
+            scene.set_instance_material(2, material);
 
-            render(context, &scene, &sample_target.image, 1 << 20)?;
-            let reference_rgba = sample_target.download()?;
-
-            let reference_rgba_u8 = reference_rgba.iter()
-                .map(|f| (f * 255.0).clamp(0.0, 255.0) as u8)
-                .collect_vec();
-
-            let reference = image::RgbaImage::from_vec(img_width, img_height, reference_rgba_u8).unwrap();
-
-            reference.save(format!("images/convergence/reference_r{}.png", (100.0 * roughness).round() as u32)).unwrap();
-
-            let reference_gray = reference_rgba.iter()
-                .copied()
-                .array_chunks::<4>()
-                .map(rgba_to_gray)
-                .collect_vec();
-
-            let file_name = format!("images/convergence/mse_r{}.txt", (100.0 * roughness).round() as u32);
+            let file_name = format!("{}/{}_r{}.txt", save_path, material_type_name, (100.0 * roughness).round() as u32);
             let mut file = std::fs::File::create(file_name).unwrap();
 
-            for &material in &materials {
-                
-                scene.set_instance_material(2, material);
+            for j in 0.. {
 
-                for j in 0..14 {
-                    render(context, &scene, &sample_target.image, 1 << j)?;
+                let time = unsafe { render(context, &scene, &sample_target.image, 1 << j)? };
+                let rgba = sample_target.download()?;
+                let mse = mse_rgb(&rgba, &reference_rgba);
 
-                    let rgba = sample_target.download()?;
-                    
-                    let gray = rgba.iter()
-                        .copied()
-                        .array_chunks::<4>()
-                        .map(rgba_to_gray)
-                        .collect_vec();
-
-                    let sse = gray.iter()
-                        .zip(reference_gray.iter())
-                        .map(|(a, b)| (b - a) * (b - a))
-                        .sum::<f32>();
-
-                    let mse = sse / gray.len() as f32;
-                    write!(file, "{} ", mse).unwrap();
+                write!(file, "{} {}\n", time, mse).unwrap();
+            
+                if time > 4.0 {
+                    break;
                 }
-
-                write!(file, "\n").unwrap();
             }
         }
     }
@@ -822,7 +738,10 @@ fn run_ss_equal_error_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
 
     let img_width = 256;
     let img_height = 256;
-    
+    let save_path = "images/ss_equal_error";
+
+    fs::create_dir_all(save_path).unwrap();
+
     let environment_map = load_environment_map(&context).unwrap();
     let camera = Camera::look_at(
         Point3::new(-1.0, 2.0, 4.0),
@@ -859,8 +778,8 @@ fn run_ss_equal_error_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     scene.set_instance_material(1, inside_mat);
 
     let material_types = [
-        ("ss_ndf",  scene.add_material_type(load_material_type(context, "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ss_ndf_sample.rcall.spv")?)),
-        ("ss_vndf", scene.add_material_type(load_material_type(context, "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ss_vndf_sample.rcall.spv")?)),
+        ("ss_ndf",  scene.add_material_type(load_material_type(context, "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ss_sample_ndf.rcall.spv")?)),
+        ("ss_vndf", scene.add_material_type(load_material_type(context, "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ss_sample_vndf.rcall.spv")?)),
     ];
     
     let roughness = 0.16;
@@ -935,17 +854,14 @@ fn run_ss_equal_error_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
             .collect_vec();
         
             image::RgbaImage::from_vec(img_width, img_height, rgba_u8).unwrap()
-                .save(file).unwrap();
+                .save(format!("{}/{}", save_path, file)).unwrap();
         };
 
-        save(reference_rgba, "images/ss_equal_error/reference.png");
-        save(ndf_rgba, "images/ss_equal_error/ndf.png");
-        save(vndf_rgba, "images/ss_equal_error/vndf.png");
+        save(reference_rgba, "reference.png");
+        save(ndf_rgba, "ndf.png");
+        save(vndf_rgba, "vndf.png");
     }
 
-    
-
-    
     Ok(())
 }
 
@@ -954,7 +870,10 @@ fn run_ms_ss_comparison_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()
     let img_width = 256;
     let img_height = 256;
     let sample_count = 1 << 16;
+    let save_path = "images/ms_ss_comparison";
     
+    fs::create_dir_all(save_path).unwrap();
+
     let environment_map = load_environment_map(&context).unwrap();
     let camera = Camera::look_at(
         Point3::new(-1.0, 2.0, 4.0),
@@ -990,14 +909,14 @@ fn run_ms_ss_comparison_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()
     scene.set_instance_material(0, backdrop_mat);
     scene.set_instance_material(1, inside_mat);
 
-    let ss_material_type = scene.add_material_type(load_material_type(context, "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ss_vndf_sample.rcall.spv")?);
-    let ms_material_type = scene.add_material_type(load_material_type(context, "shader_bin/microfacet_evaluate.rcall.spv", "shader_bin/ms_dupuy_sample.rcall.spv")?);
+    let ss_material_type = scene.add_material_type(load_material_type(context, "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ss_sample_vndf.rcall.spv")?);
+    let ms_material_type = scene.add_material_type(load_material_type(context, "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ms_sample_dupuy.rcall.spv")?);
     
     let roughnesses = [
         0.01, 0.04, 0.16, 0.64
     ];
     
-    let timings_filename = format!("images/ms_ss_comparison/timings.txt");
+    let timings_filename = format!("{}/timings.txt", save_path);
     let mut timings_file = std::fs::File::create(timings_filename).unwrap();
 
     for roughness in roughnesses {
@@ -1030,7 +949,7 @@ fn run_ms_ss_comparison_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()
                 .flat_map(post_process_orb)
                 .collect_vec();
 
-            let ss_filename = format!("images/ms_ss_comparison/ss_r{}.png", (100.0 * roughness).round() as u32);
+            let ss_filename = format!("{}/ss_r{}.png", save_path, (100.0 * roughness).round() as u32);
 
             image::RgbaImage::from_vec(img_width, img_height, ss_rgba_u8).unwrap()
                 .save(ss_filename).unwrap();
@@ -1041,7 +960,7 @@ fn run_ms_ss_comparison_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()
                 .flat_map(post_process_orb)
                 .collect_vec();
 
-            let ms_filename = format!("images/ms_ss_comparison/ms_r{}.png", (100.0 * roughness).round() as u32);
+            let ms_filename = format!("{}/ms_r{}.png", save_path, (100.0 * roughness).round() as u32);
 
             image::RgbaImage::from_vec(img_width, img_height, ms_rgba_u8).unwrap()
                 .save(ms_filename).unwrap();
@@ -1056,7 +975,7 @@ fn run_ms_ss_comparison_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()
                 .map(|c| (c.clamp(0.0, 1.0) * 255.0) as u8)
                 .collect_vec();
 
-            let diff_filename = format!("images/ms_ss_comparison/diff_r{}.png", (100.0 * roughness).round() as u32);
+            let diff_filename = format!("{}/diff_r{}.png", save_path, (100.0 * roughness).round() as u32);
 
             image::RgbaImage::from_vec(img_width, img_height, diff_rgba_u8).unwrap()
                 .save(diff_filename).unwrap();
@@ -1069,199 +988,153 @@ fn run_ms_ss_comparison_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()
     Ok(())
 } 
 
-fn compare_materials<'ctx>(context: &'ctx DeviceContext, sample_shader_1: &str, sample_shader_2: &str) -> VkResult<()> {
-    unsafe {
 
-        let img_width = 512;
-        let img_height = 512;
+fn run_furnace_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     
-        let sample_target = SampleTarget::new(&context, img_width, img_height).unwrap();
+    let img_width = 512;
+    let img_height = 512;
+    let save_path = "images/furnace";
 
-        let mut scene = Scene::new(&context);
+    fs::create_dir_all(save_path).unwrap();
 
-        let camera = Camera::new(
-            Point3::new(0.0, 0.0, 5.0),
-            Matrix3::new(
-                1.0, 0.0, -0.5,
-                0.0, -1.0, 0.5,
-                0.0, 0.0, -1.0,
-            )
-        );
-        scene.set_camera(camera);
-        
-        let environment_map = load_environment_map(&context)?;
-        let environment_map_handle = scene.add_texture(environment_map);
-        
-        scene.set_environment(Environment::spherical(&context, environment_map_handle)?);
-        // scene.set_environment(Environment::constant(&context).unwrap());
+    let camera = Camera::new(
+        Point3::new(0.0, 0.0, 2.0),
+        Matrix3::new(
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+        )
+    );
+    let sample_target = SampleTarget::new(context, img_width, img_height).unwrap();
 
-        let entry_point_name = CStr::from_bytes_with_nul_unchecked(b"main\0");
+    let mut scene = Scene::new(context);
 
-        let mat_type_1 = scene.add_material_type(MaterialType {
-            evaluation_shader: Shader::new(&context, "shader_bin/microfacet_evaluate.rcall.spv", entry_point_name.to_owned())?,
-            sample_shader: Shader::new(&context, sample_shader_1, entry_point_name.to_owned())?,
-        });
-
-        let ior = 1.54;
-        let roughness = 0.1;
-
-        let mat_1 = scene.add_material(Material {
-            ior,
-            roughness,
-            material_type: mat_type_1,
-        });
-
-        let mat_type_2 = scene.add_material_type(MaterialType {
-            evaluation_shader: Shader::new(&context, "shader_bin/microfacet_evaluate.rcall.spv", entry_point_name.to_owned())?,
-            sample_shader: Shader::new(&context, sample_shader_2, entry_point_name.to_owned())?,
-        });
-
-        let mat_2 = scene.add_material(Material {
-            ior,
-            roughness,
-            material_type: mat_type_2,
-        });
-
-        scene.load("resources/sphere.gltf", &context, None)?;
-
-        scene.set_instance_material(0, mat_1);
-        render(&context, &scene, &sample_target.image, 512)?;
-        let img_data_1 = sample_target.download()?;
-
-        scene.set_instance_material(0, mat_2);
-        render(&context, &scene, &sample_target.image, 512)?;
-        let img_data_2 = sample_target.download()?;
-
-        let diff_factor = 10.0;
-
-        let diff_img_data = img_data_1.iter().copied().array_chunks::<4>().map(rgba_to_gray)
-            .zip(img_data_2.iter().copied().array_chunks::<4>().map(rgba_to_gray))
-            .map(|gray| gray.1 - gray.0)
-            .map(|diff| if diff < 0.0 { [-diff_factor * diff, 0.0, 0.0, 1.0] } else { [0.0, diff_factor * diff, 0.0, 1.0] })
-            .flatten()
-            .map(|f| (f.clamp(0.0, 1.0) * 255.0) as u8)
-            .collect_vec();
-
-        image::RgbaImage::from_vec(img_width, img_height, diff_img_data).unwrap()
-            .save("diff.png").unwrap();
-
+    scene.load("resources/sphere.gltf", context, None)?;
     
-        let gamma = 2.2;
-        let post_process = |pixel: [f32; 4]| [pixel[0].powf(1.0 / gamma), pixel[1].powf(1.0 / gamma), pixel[2].powf(1.0 / gamma), 1.0];
-        
-        let processed_img_data_1 = img_data_1.iter()
-            .copied()
-            .array_chunks::<4>()
-            .map(post_process)
-            .flatten()
-            .map(|f| (f.clamp(0.0, 1.0) * 255.0) as u8)
-            .collect_vec();
+    scene.set_camera(camera);
+    scene.set_environment(Environment::constant(context)?);
 
-        image::RgbaImage::from_vec(img_width, img_height, processed_img_data_1).unwrap()
-            .save("output1.png").unwrap();
+    let material_types = [
+        ("ss_ndf", "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ss_sample_ndf.rcall.spv"),
+        ("ss_vndf", "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ss_sample_vndf.rcall.spv"),
+        ("ms_heitz", "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ms_sample_heitz.rcall.spv"),
+        ("ms_dupuy", "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ms_sample_dupuy.rcall.spv"),
+    ];
+    
+    let roughnesses = [
+        0.01, 0.04, 0.16, 0.64,
+    ];
 
-        let processed_img_data_2 = img_data_2.iter()
-            .copied()
-            .array_chunks::<4>()
-            .map(post_process)
-            .flatten()
-            .map(|f| (f.clamp(0.0, 1.0) * 255.0) as u8)
-            .collect_vec();
+    let mut materials = vec![];
 
-        image::RgbaImage::from_vec(img_width, img_height, processed_img_data_2).unwrap()
-            .save("output2.png").unwrap();
+    for material_type in material_types {
 
+        let material_type_handle = scene.add_material_type(load_material_type(context, material_type.1, material_type.2)?);
+
+        for roughness in roughnesses {
+
+            let material_handle = scene.add_material(Material {
+                ior: 1.54,
+                roughness,
+                material_type: material_type_handle,
+            });
+            
+            let file_path = format!("{}/{}_r{}.png", save_path, material_type.0, (100.0 * roughness).round() as u32);
+
+            materials.push((file_path, material_handle));
+        }
+    }
+    unsafe {    
+        for material in materials {
+    
+            scene.set_instance_material(0, material.1);
+    
+            render(context, &scene, &sample_target.image, 512)?;
+            
+            let img_data = sample_target.download()?;
+
+            let img_data_u8 = img_data.iter()
+                .map(|lin| lin.powf(1.0 / 2.2))
+                .map(|f| (f * 255.0).clamp(0.0, 255.0) as u8)
+                .collect_vec();
+
+            let img = image::RgbaImage::from_vec(img_width, img_height, img_data_u8).unwrap();
+
+            img.save(material.0).unwrap();
+        }
     }
     Ok(())
 }
 
 fn run_orb_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
-    unsafe {
 
-        let img_width = 512;
-        let img_height = 512;
-        
-        let sample_target = SampleTarget::new(&context, img_width, img_height).unwrap();
-
-        let mut scene = Scene::new(&context);
-
-        let camera = Camera::look_at(
-            Point3::new(-1.0, 2.0, 4.0),
-            Point3::new(0.0, 1.0, 0.0),
-            Vector3::new(0.0, 1.0, 0.0),
-            1.0,
-            std::f32::consts::PI / 4.0,
-        );
-        scene.set_camera(camera);
-        
-        let environment_map = load_environment_map(&context)?;
-        let environment_map_handle = scene.add_texture(environment_map);
-        
-        scene.set_environment(Environment::spherical(&context, environment_map_handle)?);
-        // scene.set_environment(Environment::constant(&context).unwrap());
-
-        let entry_point_name = CStr::from_bytes_with_nul_unchecked(b"main\0");
-
-        let lambertian_mat_type = scene.add_material_type(MaterialType {
-            evaluation_shader: Shader::new(&context, "shader_bin/lambertian_evaluate.rcall.spv", entry_point_name.to_owned())?,
-            sample_shader: Shader::new(&context, "shader_bin/lambertian_sample.rcall.spv", entry_point_name.to_owned())?,
-        });
-
-        let microfacet_mat_type = scene.add_material_type(MaterialType {
-            evaluation_shader: Shader::new(&context, "shader_bin/microfacet_evaluate.rcall.spv", entry_point_name.to_owned())?,
-            sample_shader: Shader::new(&context, "shader_bin/ms_heitz_sample.rcall.spv", entry_point_name.to_owned())?,
-        });
-
-        let backdrop_mat = scene.add_material(Material {
-            ior: 1.54,
-            roughness: 0.5,
-            material_type: lambertian_mat_type,
-        });
+    let img_width = 512;
+    let img_height = 512;
     
-        let inside_mat = scene.add_material(Material {
-            ior: 1.54,
-            roughness: 0.8,
-            material_type: lambertian_mat_type,
-        });
-        
-        let shell_mat = scene.add_material(Material {
-            ior: 1.54,
-            roughness: 0.1,
-            material_type: microfacet_mat_type,
-        });
+    let sample_target = SampleTarget::new(&context, img_width, img_height).unwrap();
 
-        scene.load("resources/mitsuba.gltf", &context, None)?;
+    let mut scene = Scene::new(&context);
 
-        scene.set_instance_material(0, backdrop_mat);
-        scene.set_instance_material(1, inside_mat);
-        scene.set_instance_material(2, shell_mat);
+    let camera = Camera::look_at(
+        Point3::new(-1.0, 2.0, 4.0),
+        Point3::new(0.0, 1.0, 0.0),
+        Vector3::new(0.0, 1.0, 0.0),
+        1.0,
+        std::f32::consts::PI / 4.0,
+    );
+    scene.set_camera(camera);
+    
+    let environment_map = load_environment_map(&context)?;
+    let environment_map_handle = scene.add_texture(environment_map);
+    
+    scene.set_environment(Environment::spherical(&context, environment_map_handle)?);
+    // scene.set_environment(Environment::constant(&context).unwrap());
 
-        render(&context, &scene, &sample_target.image, 512)?;
-        let img_data = sample_target.download()?;
+    let lambertian_mat_type = scene.add_material_type(
+        load_material_type(context, "shader_bin/lambertian_evaluate.rcall.spv", "shader_bin/lambertian_sample.rcall.spv")?
+    );
 
+    let microfacet_mat_type = scene.add_material_type(
+        load_material_type(context, "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ss_sample_ndf.rcall.spv")?
+    );
+    
+    let backdrop_mat = scene.add_material(Material {
+        ior: 1.54,
+        roughness: 0.5,
+        material_type: lambertian_mat_type,
+    });
 
-        let gamma = 2.2;
+    let inside_mat = scene.add_material(Material {
+        ior: 1.54,
+        roughness: 0.8,
+        material_type: lambertian_mat_type,
+    });
+    
+    let shell_mat = scene.add_material(Material {
+        ior: 1.54,
+        roughness: 0.1,
+        material_type: microfacet_mat_type,
+    });
 
-        let post_process = |pixel: [f32; 4]| [
-                (pixel[0] / 2.0).powf(1.0 / gamma),
-                (pixel[1] / 2.0).powf(1.0 / gamma),
-                (pixel[2] / 2.0).powf(1.0 / gamma),
-                1.0
-            ];
-        
-        let processed_img_data = img_data.iter()
-            .copied()
-            .array_chunks::<4>()
-            .map(post_process)
-            .flatten()
-            .map(|f| (f.clamp(0.0, 1.0) * 255.0) as u8)
-            .collect_vec();
+    scene.load("resources/mitsuba.gltf", &context, None)?;
 
-        image::RgbaImage::from_vec(img_width, img_height, processed_img_data).unwrap()
-            .save("images/orb.png").unwrap();
-    }
+    scene.set_instance_material(0, backdrop_mat);
+    scene.set_instance_material(1, inside_mat);
+    scene.set_instance_material(2, shell_mat);
+
+    unsafe { render(&context, &scene, &sample_target.image, 1 << 12)? };
+    let rgba = sample_target.download()?;
+    
+    let rgba_u8 = rgba.iter()
+        .copied()
+        .array_chunks::<4>()
+        .map(post_process_orb)
+        .flatten()
+        .collect_vec();
+
+    image::RgbaImage::from_vec(img_width, img_height, rgba_u8).unwrap()
+        .save("images/orb.png").unwrap();
     Ok(())
-
 }
 
 fn mse_rgb(image_rgba: &[f32], reference_rgba: &[f32]) -> f32 {
@@ -1305,14 +1178,13 @@ fn main() {
 
     let context = DeviceContext::new().expect("failed to create device context");
 
-    
     // run_refraction_tests(&context).unwrap();
     // run_convergence_tests(&context).unwrap();
     // run_ss_equal_error_test(&context).unwrap();
 
     // run_ms_ss_comparison_tests(&context).unwrap();
-    run_furnace_tests(&context).unwrap();
+    // run_furnace_tests(&context).unwrap();
 
     
-    // run_orb_test(&context).unwrap();
+    run_orb_test(&context).unwrap();
 }

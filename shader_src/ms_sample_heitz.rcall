@@ -1,3 +1,5 @@
+// code in this file is adapted from the supplemental material of Heitz et al.'s ""
+
 #version 460
 #extension GL_EXT_ray_tracing : require
 #extension GL_EXT_buffer_reference : require
@@ -15,19 +17,43 @@ layout(shaderRecordEXT, std430) buffer sbtData {
 
 layout(location = 0) callableDataInEXT brdfEvaluation evaluation;
 
-vec3 sampleDielectricPhaseFunction2(
+vec3 sampleConductorPhaseFunction2(
     vec3 wi,
-    bool outside_i, // is wi on the outside
-    out bool outside_o, // is wo on the outside
+    bool wi_above,
+    out bool wo_above,
     float alpha, 
     float alpha_sq,
-    float ior_rel, // one over the ior that wi is in 
+    float ior_rel, // ior_i / ior_o
     inout uint rand_state
 ) {
+    vec3 wm;
 
-    vec3 wm; // in wi's hemisphere
+    if (wi_above) {
+        wm = sampleVndfGgx(wi, alpha, rand_state);
+    } else {
+        wm = -sampleVndfGgx(-wi, alpha, rand_state);
+    }
 
-    if (outside_i) {
+    float cos_theta_im = dot(wi, wm);
+
+    vec3 wo = 2.0 * cos_theta_im * wm - wi;
+    wo_above = wi_above;
+
+    return wo;
+}
+
+vec3 sampleDielectricPhaseFunction2(
+    vec3 wi,
+    bool wi_above,
+    out bool wo_above,
+    float alpha, 
+    float alpha_sq,
+    float ior_rel,
+    inout uint rand_state
+) {
+    vec3 wm;
+
+    if (wi_above) {
         wm = sampleVndfGgx(wi, alpha, rand_state);
     } else {
         wm = -sampleVndfGgx(-wi, alpha, rand_state);
@@ -50,97 +76,53 @@ vec3 sampleDielectricPhaseFunction2(
 
     if(u < reflectance) {
         wo = 2.0 * cos_theta_im * wm - wi;
-        outside_o = outside_i;
+        wo_above = wi_above;
     } else {
-        wo = (ior_rel * cos_theta_im + cos_theta_tm) * wm - ior_rel * wi;
-        outside_o = !outside_i;
+        wo = (ior_rel * cos_theta_im - cos_theta_tm) * wm - ior_rel * wi;
+        wo_above = !wi_above;
     }
 
     return wo;
 }
 
-float evalDielectricPhaseFunction(vec3 wi, vec3 wo, bool outside_i, bool outside_o, float alpha_sq, float ior_rel) {
-
-    if (outside_i == outside_o) { // reflection
-        
-        vec3 wm = normalize(wi + wo); 
-
-
-    } else { // refraction
-        // vec3 wm = -normalize(ior_rel * wi + wo);
-        // wm *= (wi_outside) ? (sign(wm.z)) : (-sign(wm.z));
-
-        // float cos_theta_im = dot(wm, wi);
-        // float cos_theta_tm = dot(wm, wo);
-
-        // if (cos_theta_im < 0.0) {
-        //     return 0.0;
-        // }
-
-        // float value;
-
-        // if (wi_outside) {
-
-        //     float reflectance = reflectanceFresnel(cos_theta_im, , 1.0, ior_rel);
-
-        //     (1.0 - reflectance) * vndfGgx(wi, wm, alpha_sq) * max(0.0, -dot(wo, wm)) * 
-
-        // }
-        
-        
-
-    }
-
-
-
-    return 0.0;
-
-} 
-
-float randomWalk(vec3 w, vec3 wo) {
-
+vec3 randomWalk(vec3 w) {
     float alpha = roughness;
     float alpha_sq = alpha * alpha;
 
-    float sum = 0.0;
+    bool above = w.z < 0.0;
 
-    bool wo_outside = wo.z > 0.0;
-    bool outside = w.z < 0.0;
-
-    float height = 1.0 + invHeightCdfUniform(0.999);
-
+    float height = (above ? 1.0 : -1.0) * (1.0 + invHeightCdfUniform(0.999));
+    
     for (int i = 0; i < 32; i++) {
 
         bool escaped;
 
-        if(outside) {
+        if(above) {
             height = sampleHeightGgxUniform(w, height, escaped, alpha_sq, evaluation.rand_state);
         } else {
             height = -sampleHeightGgxUniform(-w, -height, escaped, alpha_sq, evaluation.rand_state);
         }
 
         if (escaped) {
-            break;
+            return w;
         }
 
         w = sampleDielectricPhaseFunction2(
             -w,
-            outside,
-            outside,
+            above,
+            above,
             alpha,
             alpha_sq,
-            outside ? 1.0 / ior : ior,
+            above ? 1.0 / ior : ior,
             evaluation.rand_state
         );
     }
 
-    return sum;
+    return vec3(0.0);
 }
 
 void main() {
-
-    vec3 w = -evaluation.wi;
-    vec3 wo = evaluation.wo;
-
-    evaluation.weight = vec3(randomWalk(w, wo));
+    vec3 w = -evaluation.wo;
+    evaluation.wi = randomWalk(w);
+    evaluation.weight = vec3(1.0);
 }

@@ -38,7 +38,6 @@ void main() {
 
     if (cos_ratio_o < 0.0) {
         evaluation.wi = vec3(0.0);
-        evaluation.weight = vec3(0.0);
         return;
     }
 

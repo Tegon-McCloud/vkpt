@@ -157,11 +157,10 @@ void main() {
     
     vec3 wo = -(world_to_tangent * gl_WorldRayDirectionEXT);
 
-    // sampleDirect(position, wo, world_to_tangent);
+    sampleDirect(position, wo, world_to_tangent);
     sampleIndirect(position, wo, tangent_to_world);
 
 
-    payload.emit = 1;
-
+    payload.emit = 0;
 }
 

@@ -1,6 +1,18 @@
 #ifndef UTIL_GLSL
 #define UTIL_GLSL
 
+bool anyNan(vec3 v) {
+    return isnan(v.x) || isnan(v.y) || isnan(v.z);
+} 
+
+bool anyInf(vec3 v) {
+    return isinf(v.x) || isinf(v.y) || isinf(v.z);
+}
+
+float maxComponent(vec3 v) {
+    return max(max(v.x, v.y), v.z);
+}
+
 mat3 getTbnMatrix(vec3 normal) {
     float signbit = sign(normal.z + 1.0e-16f);
     float a = -1.0f/(1.0f + abs(normal.z));

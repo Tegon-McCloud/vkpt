@@ -22,7 +22,7 @@ impl<'ctx> Environment<'ctx> {
         let sample_shader = unsafe {
             Shader::new(
                 context,
-                "shader_bin/constant_sample.rcall.spv", 
+                "shader_bin/env_sample_constant.rcall.spv", 
                 CStr::from_bytes_with_nul_unchecked(b"main\0").to_owned(),
             )?
         };
@@ -30,7 +30,7 @@ impl<'ctx> Environment<'ctx> {
         let miss_shader = unsafe {
             Shader::new(
                 context,
-                "shader_bin/constant.rmiss.spv",
+                "shader_bin/env_constant.rmiss.spv",
                 CStr::from_bytes_with_nul_unchecked(b"main\0").to_owned(),
             )?
         };
@@ -48,7 +48,7 @@ impl<'ctx> Environment<'ctx> {
         let sample_shader = unsafe {
             Shader::new(
                 context,
-                "shader_bin/spherical_sample.rcall.spv", 
+                "shader_bin/env_sample_spherical.rcall.spv", 
                 CStr::from_bytes_with_nul_unchecked(b"main\0").to_owned(),
             )?
         };
@@ -56,7 +56,7 @@ impl<'ctx> Environment<'ctx> {
         let miss_shader = unsafe {
             Shader::new(
                 context,
-                "shader_bin/spherical.rmiss.spv",
+                "shader_bin/env_spherical.rmiss.spv",
                 CStr::from_bytes_with_nul_unchecked(b"main\0").to_owned(),
             )?
         };
