@@ -7,6 +7,7 @@
 #include "../shader_include/random.glsl"
 #include "../shader_include/util.glsl"
 
+#include "../shader_include/microfacet.glsl"
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 
@@ -157,10 +158,9 @@ void main() {
     
     vec3 wo = -(world_to_tangent * gl_WorldRayDirectionEXT);
 
-    sampleDirect(position, wo, world_to_tangent);
+    // sampleDirect(position, wo, world_to_tangent);
     sampleIndirect(position, wo, tangent_to_world);
 
-
-    payload.emit = 0;
+    payload.emit = 1;
 }
 
