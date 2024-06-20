@@ -2,7 +2,6 @@
 use std::ops::Range;
 
 use ash::{prelude::VkResult, vk::{self, StridedDeviceAddressRegionKHR}};
-use gltf::json::extensions::buffer;
 use crate::{context::DeviceContext, resource::{DeviceBuffer, UploadBuffer}, util};
 
 // struct PipelineReference {

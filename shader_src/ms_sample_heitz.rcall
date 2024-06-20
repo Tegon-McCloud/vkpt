@@ -1,4 +1,4 @@
-// code in this file is adapted from the supplemental material of Heitz et al.'s ""
+// code in this file is adapted from the supplemental material of Heitz et al.
 
 #version 460
 #extension GL_EXT_ray_tracing : require
@@ -17,7 +17,7 @@ layout(shaderRecordEXT, std430) buffer sbtData {
 
 layout(location = 0) callableDataInEXT brdfEvaluation evaluation;
 
-vec3 sampleConductorPhaseFunction2(
+vec3 sampleConductorPhaseFunction(
     vec3 wi,
     bool wi_above,
     out bool wo_above,
@@ -42,7 +42,7 @@ vec3 sampleConductorPhaseFunction2(
     return wo;
 }
 
-vec3 sampleDielectricPhaseFunction2(
+vec3 sampleDielectricPhaseFunction(
     vec3 wi,
     bool wi_above,
     out bool wo_above,
@@ -107,7 +107,7 @@ vec3 randomWalk(vec3 w) {
             return w;
         }
 
-        w = sampleDielectricPhaseFunction2(
+        w = sampleDielectricPhaseFunction(
             -w,
             above,
             above,

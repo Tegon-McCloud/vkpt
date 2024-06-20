@@ -137,6 +137,20 @@ void sampleIndirect(vec3 position, vec3 wo, mat3 tangent_to_world) {
     payload.depth += 1;
 }
 
+void sampleWhiteFurnace(vec3 position, vec3 wo) {
+    vec3 wi; 
+
+    payload.weight *= sampleBsdfCos(wi, wo);
+
+    if (wi != vec3(0.0)) {
+        payload.radiance = payload.weight * 0.5;
+    }
+
+    payload.position = position;
+
+    payload.depth = max_depth;
+}
+
 
 void main() {
 
@@ -160,6 +174,7 @@ void main() {
 
     // sampleDirect(position, wo, world_to_tangent);
     sampleIndirect(position, wo, tangent_to_world);
+    // sampleWhiteFurnace(position, wo); 
 
     payload.emit = 1;
 }

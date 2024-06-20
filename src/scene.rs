@@ -31,6 +31,7 @@ pub struct MaterialTypeHandle {
 
 #[derive(Debug, Clone, Copy)]
 pub struct TextureHandle {
+    #[allow(unused)]
     index: usize,
 }
 

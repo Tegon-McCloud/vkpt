@@ -2,18 +2,17 @@
 #![feature(int_roundings)]
 #![feature(once_cell_try)]
 
-use std::{collections, ffi::CStr, fs, io::Write};
+use std::{ffi::CStr, fs, io::Write};
 
 use ash::{prelude::VkResult, vk};
 use gpu_allocator::MemoryLocation;
-use itertools::{iproduct, Format, Itertools};
+use itertools::Itertools;
 
 use context::DeviceContext;
 use nalgebra::{Matrix3, Point3, Vector3};
 use pipeline::{Pipeline, Shader};
 use resource::{Image, ImageView, ReadBackBuffer, UploadBuffer};
 use scene::{material::{Material, MaterialType}, MaterialHandle};
-use util::slice_as_u8_slice;
 
 use crate::{pipeline::ResourceLayout, scene::{camera::Camera, light::Environment, Scene}, shader_binding_table::ShaderBindingTableDescription, util::as_u8_slice};
 
@@ -23,7 +22,6 @@ pub mod resource;
 pub mod pipeline;
 pub mod shader_binding_table;
 pub mod scene;
-pub mod output;
 
 struct SampleTarget<'ctx> {
     #[allow(unused)]
@@ -546,7 +544,7 @@ fn load_material_type<'ctx>(context: &'ctx DeviceContext, eval_shader_file: &str
 }
 
 
-fn run_refraction_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
+fn run_refraction_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
 
     let img_width = 512;
     let img_height = 512;
@@ -590,11 +588,11 @@ fn run_refraction_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     scene.set_instance_material(1, inside_mat);
 
     let material_types = [
-        // ("ss_uniform", "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ss_sample_uniform.rcall.spv"),
-        // ("ss_ndf", "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ss_sample_ndf.rcall.spv"),
+        ("ss_uniform", "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ss_sample_uniform.rcall.spv"),
+        ("ss_ndf", "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ss_sample_ndf.rcall.spv"),
         ("ss_vndf", "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ss_sample_vndf.rcall.spv"),
-        // ("ms_heitz", "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ms_sample_heitz.rcall.spv"),
-        // ("ms_dupuy", "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ms_sample_dupuy.rcall.spv"),
+        ("ms_heitz", "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ms_sample_heitz.rcall.spv"),
+        ("ms_dupuy", "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ms_sample_dupuy.rcall.spv"),
     ];
     
     let roughnesses = [
@@ -625,7 +623,7 @@ fn run_refraction_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     
             scene.set_instance_material(2, material.1);
     
-            render(context, &scene, &sample_target.image, 1 << 12, 0)?;
+            render(context, &scene, &sample_target.image, 1 << 9, 0)?;
             
             let img_data = sample_target.download()?;
 
@@ -642,7 +640,7 @@ fn run_refraction_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     Ok(())
 }
 
-fn run_ss_convergence_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
+fn run_ss_convergence_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     
     let img_width = 512;
     let img_height = 512;
@@ -733,7 +731,7 @@ fn run_ss_convergence_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> 
 
             for j in 0.. {
 
-                let time = unsafe { render(context, &scene, &sample_target.image, 1 << j, 98765)? };
+                let time = unsafe { render(context, &scene, &sample_target.image, 1 << j, 987654)? };
                 let rgba = sample_target.download()?;
                 let mse = mse_rgb(&rgba, &reference_rgba);
 
@@ -751,8 +749,8 @@ fn run_ss_convergence_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> 
 
 fn run_ss_equal_error_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
 
-    let img_width = 256;
-    let img_height = 256;
+    let img_width = 512;
+    let img_height = 512;
     let save_path = "images/ss_equal_error";
 
     fs::create_dir_all(save_path).unwrap();
@@ -881,7 +879,7 @@ fn run_ss_equal_error_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     Ok(())
 }
 
-fn run_furnace_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
+fn run_furnace_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     
     let img_width = 512;
     let img_height = 512;
@@ -940,10 +938,10 @@ fn run_furnace_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     }
     unsafe {    
         for material in materials {
-    
+
             scene.set_instance_material(0, material.1);
-    
-            render(context, &scene, &sample_target.image, 512, 0)?;
+            
+            render(context, &scene, &sample_target.image, 1 << 16, 0)?;
             
             let img_data = sample_target.download()?;
 
@@ -960,10 +958,10 @@ fn run_furnace_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     Ok(())
 }
 
-fn run_ms_ss_comparison_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
+fn run_ms_ss_comparison_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
 
-    let img_width = 256;
-    let img_height = 256;
+    let img_width = 512;
+    let img_height = 512;
     let sample_count = 1 << 16;
     let save_path = "images/ms_ss_comparison";
     
@@ -1005,7 +1003,7 @@ fn run_ms_ss_comparison_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()
     scene.set_instance_material(1, inside_mat);
 
     let ss_material_type = scene.add_material_type(load_material_type(context, "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ss_sample_vndf.rcall.spv")?);
-    let ms_material_type = scene.add_material_type(load_material_type(context, "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ms_sample_dupuy.rcall.spv")?);
+    let ms_material_type = scene.add_material_type(load_material_type(context, "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ms_sample_heitz.rcall.spv")?);
     
     let roughnesses = [
         0.01, 0.04, 0.16, 0.64
@@ -1016,10 +1014,19 @@ fn run_ms_ss_comparison_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()
     let timings_filename = format!("{}/timings.txt", save_path);
     let mut timings_file = std::fs::File::create(timings_filename).unwrap();
 
+    let warmup_material = scene.add_material(Material {
+        ior,
+        roughness: 2.0,
+        material_type: ss_material_type,
+    });
+
+    scene.set_instance_material(2, warmup_material);
+    unsafe { render(context, &scene, &sample_target.image, sample_count, 0)? };
+
     for roughness in roughnesses {
 
         unsafe {
-            
+
             let ss_material = scene.add_material(Material {
                 ior,
                 roughness,
@@ -1085,7 +1092,7 @@ fn run_ms_ss_comparison_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()
     Ok(())
 } 
 
-fn run_ms_convergence_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
+fn run_ms_convergence_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     
     let img_width = 512;
     let img_height = 512;
@@ -1129,7 +1136,6 @@ fn run_ms_convergence_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> 
     scene.set_instance_material(1, inside_mat);
 
     let material_types = [
-        // ("ss_uniform", scene.add_material_type(load_material_type(context, "shader_bin/ss_evaluate.", sample_shader_file)))
         ("ss",  scene.add_material_type(load_material_type(context, "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ss_sample_vndf.rcall.spv")?)),
         ("ms", scene.add_material_type(load_material_type(context, "shader_bin/ss_evaluate.rcall.spv", "shader_bin/ms_sample_heitz.rcall.spv")?)),
     ];
@@ -1151,7 +1157,7 @@ fn run_ms_convergence_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> 
             });
 
             scene.set_instance_material(2, material);
-            unsafe { render(context, &scene, &sample_target.image, 1 << 14, 12345678)? };
+            unsafe { render(context, &scene, &sample_target.image, 1 << 20, 12345678)? };
 
             let reference_rgba = sample_target.download()?;
 
@@ -1184,7 +1190,7 @@ fn run_ms_convergence_tests<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> 
     Ok(())
 }
 
-fn run_sphere_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
+pub fn run_sphere_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
     let img_width = 512;
     let img_height = 512;
     
@@ -1237,7 +1243,7 @@ fn run_sphere_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
 }
 
 
-fn run_orb_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
+pub fn run_orb_test<'ctx>(context: &'ctx DeviceContext) -> VkResult<()> {
 
     let img_width = 512;
     let img_height = 512;
@@ -1332,10 +1338,6 @@ fn rgba_to_rgb([r, g, b, _]: [f32; 4]) -> [f32; 3] {
     [r, g, b]
 }
 
-fn rgb_to_gray([r, g, b]: [f32; 3]) -> f32 {
-    (r + g + b) / 3.0
-}
-
 fn to_u8(r: f32) -> u8 {
     (r.clamp(0.0, 1.0) * 255.0) as u8
 }
@@ -1351,14 +1353,14 @@ fn post_process_orb([r, g, b, a]: [f32; 4]) -> [u8; 4] {
 fn main() {
 
     let context = DeviceContext::new().expect("failed to create device context");
+    
+    run_refraction_test(&context).unwrap();
+    run_ss_convergence_test(&context).unwrap();
+    run_ss_equal_error_test(&context).unwrap();
 
-    // run_refraction_tests(&context).unwrap();
-    // run_ss_convergence_tests(&context).unwrap();
-    // run_ss_equal_error_test(&context).unwrap();
-
-    // run_furnace_tests(&context).unwrap();
-    // run_ms_ss_comparison_tests(&context).unwrap();
-    run_ms_convergence_tests(&context).unwrap();
+    run_furnace_test(&context).unwrap();
+    run_ms_ss_comparison_test(&context).unwrap();
+    run_ms_convergence_test(&context).unwrap();
     
     // run_sphere_test(&context).unwrap();
     // run_orb_test(&context).unwrap();
